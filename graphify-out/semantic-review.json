@@ -1,0 +1,188 @@
+{
+  "version": 1,
+  "status": "passed",
+  "reviewedAt": "2026-11-22T11:36:28.491Z",
+  "reviewer": "Independent Graphify source-and-test reviewer",
+  "inputDigest": "b34031643d648f55337bb7577bfaf3eab63d5d8f71c6e6630c9b5ee6e19f5e32",
+  "graphHash": "29a7ca5f15107f92159c0ca6b3080ff650f141faf24379029f01886c691573e0",
+  "method": "Independent current-source review followed by candidate-only official queries and targeted node/link inspection. Existing prior review was not reused. Source and tests remain authoritative; graph findings are distinguished from source supplementation.",
+  "executedChecks": [
+    {
+      "command": "node --test scripts/graphify.test.mjs",
+      "result": "9 tests passed, 0 failed; synthetic temporary repositories only"
+    },
+    {
+      "command": "Official candidate graph queries for identity, planning/shared storage, public/admin/legacy schedule and freshness",
+      "result": "Completed; budget truncation was supplemented by targeted node/link inspection and current source"
+    },
+    {
+      "command": "validateGraph(candidate, current inventory, candidate scope, previous verified baseline)",
+      "result": "Passed: 364 inputs, 1969 nodes, 5901 links; no structural, coverage or unchanged-symbol/relation-loss issues"
+    }
+  ],
+  "cleanupReview": {
+    "result": "Passed",
+    "evidence": "Candidate graph nodes contain no deleted report or retired verifier paths, stale repository URLs, previous branch/release/worklog narratives, or replacement characters. Remaining source_file package specifiers are external Firebase imports, not deleted repository files. Version and verification metadata are intentional."
+  },
+  "cases": [
+    {
+      "id": "attendee-member-conversion",
+      "answer": "The canvas uses attendee IDs, while confirmed session records use member IDs. convertAttendeeIdsToMemberIds calls attendeeMember; explicit memberId wins, explicit null or deleted IDs do not rematch, and legacy records use normalized name plus student-ID prefix. A prefix miss falls back to the first name match; an unresolved attendee retains its attendee ID. Guests are anonymized into guestCount for confirmed records, while operating planning groups retain guest IDs.",
+      "graphFinding": "EXTRACTED calls connect useAttendanceLogic to conversion and conversion to attendeeMember/isGuest; the lookup and explicit-identity/legacy-fallback semantic nodes and test imports are present. Source supplementation confirms each branch and fallback detail.",
+      "graphNodeIds": [
+        "src_domain_attendance_sessiongroups_convertattendeeidstomemberids",
+        "src_domain_matching_getmemberfromattendee_getmemberfromattendee",
+        "src_domain_matching_getmemberfromattendee_explicit_identity_and_legacy_fallback",
+        "src_domain_matching_getmemberfromattendee_test_identity_fallback_tests"
+      ],
+      "codeCitations": [
+        "src/domain/attendance/sessionGroups.ts:5",
+        "src/domain/attendance/guests.ts:5",
+        "src/domain/matching/getMemberFromAttendee.ts:13",
+        "src/domain/attendance/sessionGroups.test.ts:10",
+        "src/domain/matching/getMemberFromAttendee.test.ts:19",
+        "src/domain/matching/getMemberFromAttendee.test.ts:42"
+      ],
+      "limits": [
+        "Direct conversion, prefix matching and a dedicated legacy prefix-miss fallback test all exist and were inspected; these Vitest tests were not executed during this review.",
+        "Retaining an unmatched ID in the conversion helper does not imply the meeting-start UI permits unresolved registered attendees; the hook checks and blocks them."
+      ]
+    },
+    {
+      "id": "board-member-snapshot",
+      "answer": "Absent boardMemberIds denotes historical data and falls back to current member flags. An explicit empty array records no officers at that session and must remain empty. CSV export writes absence as blank and arrays as JSON; CSV import distinguishes these, and stored-session edits retain the saved snapshot. Ranking/core-player statistics use optional includes plus nullish fallback, so false from [] does not fall back.",
+      "graphFinding": "The development contract node explicitly records absent versus empty. AST nodes for parseSessionCsvRows, buildSessionsCsv, getAttendanceRanking and getCorePlayers lead to the actual consumers; source supplementation is needed for the nullish-coalescing and CSV branch semantics.",
+      "graphNodeIds": [
+        "docs_development_board_absence",
+        "src_domain_sessions_sessioncsv_parsesessioncsvrows",
+        "src_domain_exports_clubcsv_buildsessionscsv",
+        "src_domain_stats_getattendanceranking_getattendanceranking",
+        "src_domain_stats_getcoreplayers_getcoreplayers"
+      ],
+      "codeCitations": [
+        "src/domain/sessions/sessionCsv.ts:43",
+        "src/domain/exports/clubCsv.ts:77",
+        "src/domain/stats/getAttendanceRanking.ts:12",
+        "src/domain/stats/getCorePlayers.ts:28",
+        "src/services/sessionsService.ts:89",
+        "src/domain/exports/clubCsv.test.ts:75",
+        "src/domain/sessions/sessionCsv.test.ts:14",
+        "src/services/sessionsService.test.ts:48"
+      ],
+      "limits": [
+        "CSV and service tests explicitly cover absence and []; statistics tests inspect saved-snapshot precedence and current-role fallback, but a dedicated empty-array statistics test was not identified.",
+        "Existing domain/service tests were inspected, not executed."
+      ]
+    },
+    {
+      "id": "planning-confirmed-preservation",
+      "answer": "DailyPlannings operating snapshots and sessions confirmed records are separate. renameDailyPlanningGroup transactionally reads both current documents, then maps only the matching group name on each document independently, preserving recorded games, notes, members and unrelated groups. It does not recreate a removed session group; missing linked sessions fail before writes. Planning restore/delete leave confirmed session records intact.",
+      "graphFinding": "The distinct-document semantic node, EXTRACTED useMeetingProgressLogic call to renameDailyPlanningGroup, service/test imports and archive call are present. Transaction ordering and preservation guarantees are established from the source and assertions rather than inferred from graph topology.",
+      "graphNodeIds": [
+        "docs_development_planning_confirmed",
+        "src_services_dailyplanningservice_renamedailyplanninggroup",
+        "src_services_dailyplanningservice_test",
+        "src_hooks_usemeetingprogresslogic_usemeetingprogresslogic"
+      ],
+      "codeCitations": [
+        "src/services/dailyPlanningService.ts:81",
+        "src/services/dailyPlanningService.test.ts:28",
+        "src/services/dailyPlanningService.test.ts:56",
+        "src/services/dailyPlanningService.ts:29",
+        "src/services/sessionsService.ts:74",
+        "src/hooks/useAttendanceLogic.ts:315"
+      ],
+      "limits": [
+        "Service tests use a mocked runTransaction and do not execute real contention/retry behavior.",
+        "Rename uses Firestore transaction retries, but updateSessionRecord separately uses getDoc plus writeBatch; the graph must not imply all editors are concurrency-safe.",
+        "Existing application tests were inspected, not executed; no Emulator concurrency trial was performed."
+      ]
+    },
+    {
+      "id": "shared-firestore-consumers",
+      "answer": "Attendance, meeting progress, session editing, archive statistics and CSV exports share sessions/member/game data despite lacking direct imports between all consumers. Attendance writes confirmed sessions and DailyPlannings, meeting progress reads both, useSessionsLogic edits sessions, useArchiveLogic subscribes and calculates statistics, and settingsService loads sessions/members/games for exports. Session deletion detaches linked plans; planning deletion preserves confirmed records.",
+      "graphFinding": "Relevant hook/service AST nodes and the Firestore private-operations semantic node exist. Direct import/call links are EXTRACTED. Shared-storage coupling is supplemented by source searches for collection and subscription names; the graph does not encode every indirect consumer as a dedicated shared-data edge.",
+      "graphNodeIds": [
+        "src_hooks_useattendancelogic_useattendancelogic",
+        "src_hooks_usemeetingprogresslogic_usemeetingprogresslogic",
+        "src_hooks_usearchivelogic_usearchivelogic",
+        "src_services_settingsservice_loadsessionexportdata",
+        "firestore_shared_private_operations"
+      ],
+      "codeCitations": [
+        "src/hooks/useAttendanceLogic.ts:56",
+        "src/hooks/useAttendanceLogic.ts:315",
+        "src/hooks/useMeetingProgressLogic.ts:22",
+        "src/hooks/useMeetingProgressLogic.ts:89",
+        "src/hooks/useSessionsLogic.ts:16",
+        "src/hooks/useArchiveLogic.ts:18",
+        "src/services/settingsService.ts:70",
+        "src/services/sessionsService.ts:140",
+        "firestore.rules:198"
+      ],
+      "limits": [
+        "Graph absence or missing directed paths cannot exclude storage impact. Shared collection searches and current source are required.",
+        "No production data or deployed state was inspected; existing consumer tests were inspected, not executed."
+      ]
+    },
+    {
+      "id": "public-admin-legacy-schedule",
+      "answer": "interviewAccess exact active token reads and tightly limited public response/first-access writes form a separate boundary from normalized-email admins role checks. Admin/master privilege requires a stored valid role; there is no bootstrap-email exception, and master edits are not allowed through general client writes. Public client scheduleId undefined uses the legacy round, null produces an unassigned waiting state with no round subscription, and an ID subscribes to the public schedule plus common round text. Rules normalize absent/non-string schedule IDs to null and can use legacy round survey validation, so their null handling is broader than the UI. Active public round/schedule exact gets are allowed independently of bearer-token membership; lists remain admin-only.",
+      "graphFinding": "The graph includes EXTRACTED semantic rule nodes for bearer-token access, normalized operator identity and legacy schedule fallback, the development tristate contract, subscribeToPublicInterview and checkAdminStatus. Source supplementation explains the precise client/Rules mismatch and avoids claiming token-bound schedule authorization.",
+      "graphNodeIds": [
+        "firestore_public_bearer",
+        "firestore_strict_operator_identity",
+        "firestore_legacy_schedule_fallback",
+        "docs_development_schedule_tristate",
+        "src_services_publicinterviewservice_subscribetopublicinterview",
+        "src_lib_firebase_checkadminstatus"
+      ],
+      "codeCitations": [
+        "src/services/publicInterviewService.ts:85",
+        "src/lib/firebase.ts:150",
+        "firestore.rules:18",
+        "firestore.rules:45",
+        "firestore.rules:69",
+        "firestore.rules:252",
+        "firestore.rules:361",
+        "firestore.rules:376",
+        "src/tests/firestore.rules.test.ts:524",
+        "src/tests/firestore.rules.test.ts:627",
+        "src/hooks/usePublicInterviewLogic.test.ts:56",
+        "src/services/publicInterviewService.test.ts:40"
+      ],
+      "limits": [
+        "Rules tests exist for roles, exact public reads, list denial, immutable identity fields, server timestamps and legacy availability; their presence is not an execution result.",
+        "No Rules Emulator, app unit suite, browser or deployed Firebase validation was executed in this documentation/tooling handover.",
+        "The client four-day first-access display window is not a matching Rules-enforced restriction; Rules validate configured survey windows and allowed slots."
+      ]
+    },
+    {
+      "id": "freshness-semantic-and-omission",
+      "answer": "Current input/control content hashes match pending analysis input, and candidate scope covers all 364 inputs. Body-only changes invalidate the digest even at unchanged HEAD; artifact byte changes invalidate bundle integrity. validateGraph detects lost unchanged symbols/relations even with equal node counts, and validateReview requires six distinct cases with real node/source evidence. Official AST structure alone cannot validate changed meaning: current source inspection and a newly hash-bound semantic review are required. The extracted inventory helper is represented and covered by the current inventory.",
+      "graphFinding": "snapshot, freshness, validateGraph and the Graph freshness and evidence regression guards semantic node are present with EXTRACTED links to validation/freshness functions. Candidate validation against previous verified evidence returned no issues. The test suite actually executed successfully, unlike application tests merely inspected in the other cases.",
+      "graphNodeIds": [
+        "scripts_graphify_snapshot",
+        "scripts_graphify_freshness",
+        "scripts_graphify_validategraph",
+        "scripts_graphify_test_input_and_evidence_guards"
+      ],
+      "codeCitations": [
+        "scripts/graphify.mjs:35",
+        "scripts/graphify.mjs:44",
+        "scripts/graphify.mjs:49",
+        "scripts/graphify.mjs:73",
+        "scripts/graphify.test.mjs:24",
+        "scripts/graphify.test.mjs:102",
+        "scripts/graph-inventory.mjs:13",
+        "docs/knowledge-graph.md:70"
+      ],
+      "limits": [
+        "Executed node --test scripts/graphify.test.mjs: 9 passed, 0 failed. These are local synthetic verifier regression tests, not application or deployment tests.",
+        "Hash consistency and structural coverage cannot automatically prove prose correctness or exhaustive business semantics.",
+        "Broad official query outputs were budget-truncated; targeted candidate nodes/links and source supplied the reviewed evidence.",
+        "The graph contains more than 5000 links but fewer than 5000 nodes; any HTML aggregation behavior is a renderer property, not semantic validation."
+      ]
+    }
+  ]
+}
