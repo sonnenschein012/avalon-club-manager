@@ -1,0 +1,392 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasEmail() {
+      return isSignedIn() && request.auth.token.email is string;
+    }
+
+    function signedInAdminEmail() {
+      return request.auth.token.email.trim().lower();
+    }
+
+    // Only explicitly registered, valid roles grant operator access.
+    function isAdmin() {
+      return hasEmail() &&
+        exists(/databases/$(database)/documents/admins/$(signedInAdminEmail())) &&
+        get(/databases/$(database)/documents/admins/$(signedInAdminEmail())).data.get('role', null) in ['admin', 'master'];
+    }
+
+    // 2. isMasterAdmin() checks the role field in admins collection
+    function isMasterAdmin() {
+      return isAdmin() &&
+        get(/databases/$(database)/documents/admins/$(signedInAdminEmail())).data.role == 'master';
+    }
+
+    // Registered operators share normal interview operations. Master remains
+    // reserved for high-risk administration elsewhere in these rules.
+    function canManageInterviews() {
+      return isAdmin() || isMasterAdmin();
+    }
+
+    function publicRoundExists(roundId) {
+      return exists(/databases/$(database)/documents/interviewPublicRounds/$(roundId));
+    }
+
+    function publicScheduleExists(scheduleId) {
+      return scheduleId is string &&
+        exists(/databases/$(database)/documents/interviewPublicSchedules/$(scheduleId));
+    }
+
+    function accessScheduleId(access) {
+      return ('scheduleId' in access && access.scheduleId is string) ? access.scheduleId : null;
+    }
+
+    function isLegacySurveyWindowOpen(roundId) {
+      let round = get(/databases/$(database)/documents/interviewPublicRounds/$(roundId));
+      return publicRoundExists(roundId) &&
+        round.data.active == true &&
+        round.data.surveyOpensAt is timestamp &&
+        round.data.surveyClosesAt is timestamp &&
+        request.time >= round.data.surveyOpensAt &&
+        request.time < round.data.surveyClosesAt;
+    }
+
+    function isScheduleSurveyWindowOpen(scheduleId) {
+      let schedule = get(/databases/$(database)/documents/interviewPublicSchedules/$(scheduleId));
+      return publicScheduleExists(scheduleId) &&
+        schedule.data.active == true &&
+        schedule.data.surveyOpensAt is timestamp &&
+        schedule.data.surveyClosesAt is timestamp &&
+        request.time >= schedule.data.surveyOpensAt &&
+        request.time < schedule.data.surveyClosesAt;
+    }
+
+    function isSurveyWindowOpen(roundId, scheduleId) {
+      return (scheduleId is string && isScheduleSurveyWindowOpen(scheduleId)) ||
+        (scheduleId == null && isLegacySurveyWindowOpen(roundId));
+    }
+
+    function hasLegacyAvailability(roundId, availability) {
+      let round = get(/databases/$(database)/documents/interviewPublicRounds/$(roundId));
+      return publicRoundExists(roundId) &&
+        round.data.allowedSlots is list &&
+        availability.toSet().hasOnly(round.data.allowedSlots);
+    }
+
+    function hasScheduleAvailability(scheduleId, availability) {
+      let schedule = get(/databases/$(database)/documents/interviewPublicSchedules/$(scheduleId));
+      return publicScheduleExists(scheduleId) &&
+        schedule.data.allowedSlots is list &&
+        availability.toSet().hasOnly(schedule.data.allowedSlots);
+    }
+
+    function hasValidAvailability(roundId, scheduleId) {
+      let availability = request.resource.data.availability;
+      return availability is list &&
+        resource.data.firstAccessedAt is timestamp &&
+        availability.size() == availability.toSet().size() &&
+        ((scheduleId is string && hasScheduleAvailability(scheduleId, availability)) ||
+          (scheduleId == null && hasLegacyAvailability(roundId, availability)));
+    }
+
+    // Spark 요금제 호환 정책: 최초 접속 시각은 Firestore 서버 시각으로
+    // 한 번만 기록한다. 날짜별 4일 범위 계산은 공개 페이지에서 이 값을
+    // 기준으로 수행한다. Firestore Rules만으로는 KST 달력 계산·동적 슬롯
+    // 목록 생성을 검증할 수 없으므로, 직접 API 요청의 범위까지는 강제하지
+    // 않고 회차 전체의 허용 슬롯만 검증한다.
+    function isValidPublicFirstAccessUpdate() {
+      return resource.data.active == true &&
+        resource.data.firstAccessedAt == null &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['firstAccessedAt']) &&
+        request.resource.data.firstAccessedAt is timestamp &&
+        request.resource.data.firstAccessedAt == request.time &&
+        isSurveyWindowOpen(resource.data.roundId, accessScheduleId(resource.data));
+    }
+
+    function hasValidSubmissionTimestamps() {
+      return request.resource.data.updatedAt is timestamp &&
+        request.resource.data.updatedAt == request.time &&
+        (
+          (resource.data.submittedAt == null &&
+            request.resource.data.submittedAt is timestamp &&
+            request.resource.data.submittedAt == request.time) ||
+          (resource.data.submittedAt is timestamp &&
+            request.resource.data.submittedAt == resource.data.submittedAt)
+        );
+    }
+
+    function isValidPublicResponseUpdate() {
+      return resource.data.active == true &&
+        (!('assignmentSummary' in resource.data) || resource.data.assignmentSummary == null || resource.data.assignmentSummary.status != 'completed') &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['availability', 'submittedAt', 'updatedAt', 'responseUpdatedAt']) &&
+        isSurveyWindowOpen(resource.data.roundId, accessScheduleId(resource.data)) &&
+        hasValidAvailability(resource.data.roundId, accessScheduleId(resource.data)) &&
+        request.resource.data.responseUpdatedAt is timestamp &&
+        request.resource.data.responseUpdatedAt == request.time &&
+        hasValidSubmissionTimestamps();
+    }
+
+    // Fail closed if private assignment details are accidentally copied into
+    // a document that is readable through an applicant bearer link.
+    function hasPublicSafeAssignmentSummary() {
+      return !('assignmentSummary' in resource.data) ||
+        resource.data.assignmentSummary == null ||
+        (resource.data.assignmentSummary is map &&
+          resource.data.assignmentSummary.keys().hasOnly(['slotId', 'status', 'revision']));
+    }
+
+    // New documents require core fields. Legacy updates validate changed fields
+    // only, allowing existing incomplete documents to be repaired incrementally.
+    function validMemberFields(fields) {
+      let d = request.resource.data;
+      return (!fields.hasAny(['name']) || (d.get('name', null) is string && d.name.size() > 0)) &&
+        (!fields.hasAny(['nickname']) || (d.get('nickname', null) is string)) &&
+        (!fields.hasAny(['studentId']) || (d.get('studentId', null) is string)) &&
+        (!fields.hasAny(['phone']) || (d.get('phone', null) is string)) &&
+        (!fields.hasAny(['gender']) || (d.get('gender', null) in ['남', '여', '기타'])) &&
+        (!fields.hasAny(['semester']) || (d.get('semester', null) is string)) &&
+        (!fields.hasAny(['preferredGenre']) || (d.get('preferredGenre', null) is list)) &&
+        (!fields.hasAny(['createdAt']) || (d.get('createdAt', null) is timestamp)) &&
+        (!fields.hasAny(['status']) || (!('status' in d) || d.status in ['활동', '휴면'])) &&
+        (!fields.hasAny(['isBoardMember']) || (!('isBoardMember' in d) || d.isBoardMember is bool));
+    }
+
+    function validGameFields(fields) {
+      let d = request.resource.data;
+      return (!fields.hasAny(['title']) || (d.get('title', null) is string && d.title.size() > 0)) &&
+        (!fields.hasAny(['minPlayers']) || (!('minPlayers' in d) || d.minPlayers is number)) &&
+        (!fields.hasAny(['maxPlayers']) || (!('maxPlayers' in d) || d.maxPlayers is number)) &&
+        (!fields.hasAny(['bestMinPlayers']) || (!('bestMinPlayers' in d) || d.bestMinPlayers is number)) &&
+        (!fields.hasAny(['bestMaxPlayers']) || (!('bestMaxPlayers' in d) || d.bestMaxPlayers is number)) &&
+        (!fields.hasAny(['complexity']) || (!('complexity' in d) || d.complexity is number)) &&
+        (!fields.hasAny(['genres']) || (!('genres' in d) || d.genres is list));
+    }
+
+    function validSessionFields(fields) {
+      let d = request.resource.data;
+      return (!fields.hasAny(['name']) || (d.get('name', null) is string)) &&
+        (!fields.hasAny(['date']) || (d.get('date', null) is timestamp)) &&
+        (!fields.hasAny(['groups']) || (d.get('groups', null) is list)) &&
+        (!fields.hasAny(['boardMemberIds']) || (!('boardMemberIds' in d) || d.boardMemberIds is list));
+    }
+
+    // Internal club operations are available only to registered operators.
+    match /members/{memberId} {
+      allow read: if isAdmin() || isMasterAdmin();
+      allow create: if (isAdmin() || isMasterAdmin()) &&
+        validMemberFields(request.resource.data.keys().toSet().union(['name', 'nickname', 'studentId', 'phone', 'gender', 'semester', 'preferredGenre', 'createdAt'].toSet()));
+      allow update: if (isAdmin() || isMasterAdmin()) &&
+        validMemberFields(request.resource.data.diff(resource.data).affectedKeys());
+      allow delete: if isAdmin() || isMasterAdmin();
+    }
+
+    match /games/{gameId} {
+      allow read: if isAdmin() || isMasterAdmin();
+      allow create: if (isAdmin() || isMasterAdmin()) &&
+        validGameFields(request.resource.data.keys().toSet().union(['title'].toSet()));
+      allow update: if (isAdmin() || isMasterAdmin()) &&
+        validGameFields(request.resource.data.diff(resource.data).affectedKeys());
+      allow delete: if isAdmin() || isMasterAdmin();
+    }
+
+    match /sessions/{sessionId} {
+      allow read: if isAdmin() || isMasterAdmin();
+      allow create: if (isAdmin() || isMasterAdmin()) &&
+        validSessionFields(request.resource.data.keys().toSet().union(['name', 'date', 'groups'].toSet()));
+      allow update: if (isAdmin() || isMasterAdmin()) &&
+        validSessionFields(request.resource.data.diff(resource.data).affectedKeys());
+      allow delete: if isAdmin() || isMasterAdmin();
+    }
+
+    match /attendees/{attendeeId} {
+      allow read: if isAdmin() || isMasterAdmin();
+      allow create: if (isAdmin() || isMasterAdmin()) &&
+                    request.resource.data.keys().hasAll(['name', 'importDate', 'status']) &&
+                    request.resource.data.name is string &&
+                    request.resource.data.status in ['대기', '편성됨', '결석'];
+      allow update: if (isAdmin() || isMasterAdmin()) &&
+                    request.resource.data.keys().hasAll(['name', 'importDate', 'status']) &&
+                    request.resource.data.name is string &&
+                    request.resource.data.status in ['대기', '편성됨', '결석'];
+      allow delete: if isAdmin() || isMasterAdmin();
+    }
+
+    // 3. DailyPlannings: schema validation
+    match /DailyPlannings/{planningId} {
+      allow read: if isAdmin() || isMasterAdmin();
+      allow create: if (isAdmin() || isMasterAdmin()) && 
+                    request.resource.data.keys().hasAll(['date', 'groups', 'createdAt']) &&
+                    request.resource.data.date is string &&
+                    request.resource.data.groups is list &&
+                    request.resource.data.createdAt is timestamp &&
+                    request.resource.data.createdAt == request.time;
+      allow update: if (isAdmin() || isMasterAdmin()) && 
+                    request.resource.data.keys().hasAll(['date', 'groups', 'createdAt']) &&
+                    request.resource.data.date is string &&
+                    request.resource.data.groups is list &&
+                    request.resource.data.createdAt is timestamp &&
+                    (request.resource.data.createdAt == request.time || request.resource.data.createdAt == resource.data.createdAt);
+      allow delete: if isAdmin() || isMasterAdmin();
+      match /versions/{versionId} {
+        allow read, delete: if isAdmin() || isMasterAdmin();
+        allow create: if (isAdmin() || isMasterAdmin()) &&
+                      request.resource.data.keys().hasAll(['snapshot', 'archivedAt', 'actorEmail', 'reason']) &&
+                      request.resource.data.snapshot is map &&
+                      request.resource.data.snapshot.date is string &&
+                      request.resource.data.snapshot.groups is list &&
+                      request.resource.data.reason is string &&
+                      request.resource.data.archivedAt == request.time &&
+                      request.resource.data.actorEmail == request.auth.token.email;
+        allow update: if false;
+      }
+    }
+
+    // Master lifecycle is managed through trusted IAM administration, not the web app.
+    // Self lookup must also work for a missing/invalid role so login can fail closed.
+    match /admins/{adminEmail} {
+      allow get: if isMasterAdmin() ||
+        (hasEmail() && request.auth.token.email.trim().lower() == adminEmail);
+      allow list: if isMasterAdmin();
+      allow create: if isMasterAdmin() &&
+        adminEmail == adminEmail.trim().lower() &&
+        adminEmail.matches('[^\\s/@]+@[^\\s/@]+[.][^\\s/@]+') &&
+        request.resource.data.keys().hasAll(['email', 'role', 'createdAt']) &&
+        request.resource.data.keys().hasOnly(['email', 'role', 'createdAt']) &&
+        request.resource.data.email == adminEmail &&
+        request.resource.data.role == 'admin' &&
+        request.resource.data.createdAt is timestamp &&
+        request.resource.data.createdAt == request.time;
+      allow update: if false;
+      allow delete: if isMasterAdmin() && resource.data.get('role', null) == 'admin';
+    }
+
+    // Human-readable operator history. Events are append-only in the web app,
+    // use the authenticated email, and can be reviewed only by a master.
+    match /auditEvents/{eventId} {
+      allow read: if isMasterAdmin();
+      allow create: if (isAdmin() || isMasterAdmin()) &&
+        request.resource.data.keys().hasAll([
+          'category', 'action', 'actorEmail', 'occurredAt',
+          'targetLabel', 'schemaVersion'
+        ]) &&
+        request.resource.data.keys().hasOnly([
+          'category', 'action', 'actorEmail', 'occurredAt',
+          'targetId', 'targetLabel', 'changes', 'detail', 'count',
+          'schemaVersion'
+        ]) &&
+        request.resource.data.category in [
+          'admin', 'member', 'game', 'session', 'attendance', 'interview'
+        ] &&
+        request.resource.data.action is string &&
+        request.resource.data.action.size() <= 100 &&
+        request.resource.data.actorEmail == request.auth.token.email &&
+        request.resource.data.occurredAt == request.time &&
+        request.resource.data.targetLabel is string &&
+        request.resource.data.targetLabel.size() <= 300 &&
+        (!('targetId' in request.resource.data) ||
+          (request.resource.data.targetId is string && request.resource.data.targetId.size() <= 500)) &&
+        (!('changes' in request.resource.data) ||
+          (request.resource.data.changes is list && request.resource.data.changes.size() <= 100)) &&
+        (!('detail' in request.resource.data) ||
+          (request.resource.data.detail is string && request.resource.data.detail.size() <= 10020)) &&
+        (!('count' in request.resource.data) ||
+          (request.resource.data.count is int && request.resource.data.count >= 0)) &&
+        request.resource.data.schemaVersion == 1;
+      allow update, delete: if false;
+    }
+
+    // Interview configuration and applicant personal data are always private.
+    match /interviewRounds/{roundId} {
+      allow read, write: if canManageInterviews();
+    }
+
+    match /interviewSchedules/{scheduleId} {
+      allow read, write: if canManageInterviews();
+    }
+
+    match /interviewApplicants/{applicantId} {
+      allow read, write: if canManageInterviews();
+    }
+
+    match /interviewAssignmentLocks/{lockId} {
+      allow read, write: if canManageInterviews();
+    }
+
+    match /interviewApplicantKeys/{keyId} {
+      allow read, write: if canManageInterviews();
+    }
+
+    match /interviewerProfiles/{profileId} {
+      allow read, write: if canManageInterviews();
+    }
+
+    match /interviewRoundInterviewers/{participantId} {
+      allow read, write: if canManageInterviews();
+    }
+
+    match /interviewScheduleInterviewers/{participantId} {
+      allow read, write: if canManageInterviews();
+    }
+
+    match /interviewAssignmentEvents/{eventId} {
+      allow read, create: if canManageInterviews();
+      allow delete: if canManageInterviews();
+    }
+
+    // Interview notes can contain sensitive application answers and internal
+    // observations, so they are never exposed through an applicant token.
+    match /interviewNotes/{noteId} {
+      allow read, write: if canManageInterviews();
+    }
+
+    // Immutable-style snapshots keep completed and reset/withdrawn interview
+    // attempts extractable for V4 without exposing them to applicant links.
+    match /interviewRecordEvents/{eventId} {
+      allow read, create: if canManageInterviews();
+      allow delete: if canManageInterviews();
+    }
+
+    match /interviewChangeRequests/{token} {
+      allow read, write: if canManageInterviews();
+    }
+
+    // A public round can be fetched only by its exact document path while it is
+    // active. Collection enumeration and all writes remain admin-only.
+    match /interviewPublicRounds/{roundId} {
+      allow get: if canManageInterviews() || resource.data.active == true;
+      allow list: if canManageInterviews();
+      allow create, update, delete: if canManageInterviews();
+    }
+
+    match /interviewPublicSchedules/{scheduleId} {
+      allow get: if canManageInterviews() || resource.data.active == true;
+      allow list: if canManageInterviews();
+      allow create, update, delete: if canManageInterviews();
+    }
+
+    // The token is a bearer credential. Public clients may fetch that exact,
+    // active token document and only update their response fields. They cannot
+    // enumerate tokens, create/delete documents, or change identity/admin data.
+    match /interviewAccess/{token} {
+      // Missing exact paths may be read so the UI can show "invalid link";
+      // inactive real tokens remain unreadable and token listing stays denied.
+      allow get: if canManageInterviews() ||
+        !exists(/databases/$(database)/documents/interviewAccess/$(token)) ||
+        (resource.data.active == true && hasPublicSafeAssignmentSummary());
+      allow list: if canManageInterviews();
+      allow create, delete: if canManageInterviews();
+      allow update: if canManageInterviews() || isValidPublicResponseUpdate() || isValidPublicFirstAccessUpdate();
+    }
+
+    // 6. Default deny for all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,178 @@
+import { useState, useEffect, useRef } from 'react';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { onSnapshot, doc } from 'firebase/firestore';
+import { Member, Game, Session } from '../types';
+import { toast } from 'sonner';
+import { useFirestore } from './useFirestore';
+import { captureBoard } from '../services/captureService';
+import { renameDailyPlanningGroup } from '../services/dailyPlanningService';
+import { recommendGames, getMemberPlayedGames, type RecMode } from '../domain/recommendation/recommendGames';
+import type { DailyPlanning } from '../domain/attendance/dailyPlanning';
+import { koreaDateKey } from '../domain/shared/koreaDate';
+import { calculateGridPositions, generateDrinkOrderText } from '../domain/meeting/progressHelpers';
+
+export function useMeetingProgressLogic(onSidebarToggle?: (collapsed: boolean) => void) {
+  const [selectedDate, setSelectedDate] = useState(() => koreaDateKey());
+  const [customTitle, setCustomTitle] = useState<string | null>(null);
+  const [loadedPlanning, setDailyPlanning] = useState<DailyPlanning | null>(null);
+  const dailyPlanning = loadedPlanning?.date === selectedDate ? loadedPlanning : null;
+
+  const { data: members } = useFirestore<Member>('members');
+  const { data: games } = useFirestore<Game>('games', 'title');
+  const { data: sessions } = useFirestore<Session>('sessions');
+  const attendees = dailyPlanning?.date === selectedDate ? dailyPlanning.attendees ?? [] : [];
+  
+  const [selectedMember, setSelectedMember] = useState<Member | null>(null);
+  const [groupRecModes, setGroupRecModes] = useState<Record<string, RecMode>>({});
+  const [groupSearchedGameIds, setGroupSearchedGameIds] = useState<Record<string, string>>({});
+
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'notice' | 'drink'>('dashboard');
+  const [cardStyles, setCardStyles] = useState<Record<string, { bgColor: string }>>({});
+  const [editingCardId, setEditingCardId] = useState<string | null>(null);
+  const [cardPositions, setCardPositions] = useState<Record<string, {x: number, y: number}>>({});
+  const [guides, setGuides] = useState<{ x: number | null, y: number | null }>({ x: null, y: null });
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [editingGroupName, setEditingGroupName] = useState<string>('');
+  const captureRef = useRef<HTMLDivElement>(null);
+
+  const [boardScale, setBoardScale] = useState(1);
+  const [boardHeight, setBoardHeight] = useState(800);
+  const viewContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (onSidebarToggle) {
+      onSidebarToggle(activeTab === 'notice');
+    }
+  }, [activeTab, onSidebarToggle]);
+
+  useEffect(() => {
+    let max = 800;
+    Object.entries(cardPositions).forEach(([id, pos]: [string, {x: number, y: number}]) => {
+      const el = document.getElementById(`card-${id}`);
+      const h = el ? el.offsetHeight : 250;
+      max = Math.max(max, pos.y + h + 45);
+    });
+    setBoardHeight(max);
+  }, [cardPositions]);
+
+  useEffect(() => {
+    const checkScale = () => {
+      if (viewContainerRef.current) {
+        const w = viewContainerRef.current.clientWidth;
+        setBoardScale(Math.min(1, (w - 32) / 1600));
+      }
+    };
+    checkScale();
+    window.addEventListener('resize', checkScale);
+    return () => window.removeEventListener('resize', checkScale);
+  }, [isFullscreen, activeTab]);
+
+  const handleCapture = async () => {
+    if (!captureRef.current) return;
+    await captureBoard(captureRef.current, boardHeight, selectedDate || 'temp');
+  };
+
+  const handleCopyDrinkOrder = () => {
+    if (!dailyPlanning) return;
+    const getter = (m: Member | undefined) => m ? getAttendeeFromMember(m) : undefined;
+    const text = generateDrinkOrderText(dailyPlanning.groups, members, getter, attendees);
+    navigator.clipboard.writeText(text).then(() => {
+      toast.success('복사되었습니다.');
+    }).catch(() => {
+      toast.error('복사에 실패했습니다.');
+    });
+  };
+
+  useEffect(() => {
+    if (!selectedDate) return;
+    const docRef = doc(db, 'DailyPlannings', selectedDate);
+    const unsubPlanning = onSnapshot(docRef, (snap) => {
+      if (snap.exists()) {
+        setDailyPlanning(snap.data() as DailyPlanning);
+      } else {
+        setDailyPlanning(null);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, `DailyPlannings/${selectedDate}`);
+    });
+    return () => unsubPlanning();
+  }, [selectedDate]);
+
+  useEffect(() => {
+    if (dailyPlanning) {
+      const timer = setTimeout(() => {
+        setCardPositions(calculateGridPositions(dailyPlanning.groups));
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [dailyPlanning]);
+
+  const handleGridAlign = () => {
+    if (!dailyPlanning) return;
+    setCardPositions(calculateGridPositions(dailyPlanning.groups));
+  };
+
+  const handleUpdateGroupName = async (groupId: string) => {
+    if (!dailyPlanning) return;
+    
+    try {
+      await renameDailyPlanningGroup(selectedDate || 'temp', groupId, editingGroupName);
+      setEditingGroupId(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `DailyPlannings/${selectedDate}`);
+    }
+  };
+
+  const getAttendeeFromMember = (m: Member) => {
+    return attendees.find(attendee => attendee.memberId === m.id);
+  };
+
+  const handleRecommendGames = (groupMembers: Member[], mode: RecMode, seed: number = 0, participantCount?: number) => {
+    return recommendGames(groupMembers, mode, seed, sessions, games, members, participantCount);
+  };
+
+  const handleGetMemberPlayedGames = (memberId: string) => {
+    return getMemberPlayedGames(memberId, sessions);
+  };
+
+  const colors = [
+    '#E11D48',
+    '#2563EB',
+    '#16A34A',
+    '#D97706',
+    '#9333EA',
+    '#C026D3',
+    '#0284C7',
+    '#0D9488',
+  ];
+
+  return {
+    selectedDate, setSelectedDate,
+    customTitle, setCustomTitle,
+    dailyPlanning,
+    members, games, sessions, attendees,
+    selectedMember, setSelectedMember,
+    groupRecModes, setGroupRecModes,
+    groupSearchedGameIds, setGroupSearchedGameIds,
+    activeTab, setActiveTab,
+    cardStyles, setCardStyles,
+    editingCardId, setEditingCardId,
+    cardPositions, setCardPositions,
+    guides, setGuides,
+    isFullscreen, setIsFullscreen,
+    editingGroupId, setEditingGroupId,
+    editingGroupName, setEditingGroupName,
+    captureRef, viewContainerRef,
+    boardScale, boardHeight,
+    
+    handleCapture,
+    handleCopyDrinkOrder,
+    handleGridAlign,
+    handleUpdateGroupName,
+    getAttendeeFromMember,
+    memberPlayedGames: handleGetMemberPlayedGames,
+    recommendGames: handleRecommendGames,
+    colors
+  };
+}

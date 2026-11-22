@@ -1,0 +1,159 @@
+import type { Member } from '../../types';
+import { isSameName } from '../matching/isSameName';
+
+export const attendanceFields = {
+  name: '이름 또는 학번 및 이름', studentIdPrefix: '학번', drink: '음료',
+  afterparty: '뒤풀이 참석 여부', request: '희망사항',
+  guestAccompany: '게스트 동반 여부', guestName: '게스트 이름', guestDrink: '게스트 희망 음료',
+} as const;
+export type AttendanceField = keyof typeof attendanceFields;
+// -1 needs a choice; -2 explicitly omits an optional field.
+export type AttendanceMapping = Record<Exclude<AttendanceField, 'guestAccompany' | 'guestName' | 'guestDrink'>, number> & Partial<Record<'guestAccompany' | 'guestName' | 'guestDrink', number>>;
+export interface AttendanceImportInput {
+  headers: string[];
+  rows: string[][];
+  mapping: AttendanceMapping;
+  review?: Record<number, { fields?: Partial<Record<AttendanceField, string>>; memberId?: string }>;
+  allowUnregistered?: boolean;
+}
+export interface AttendanceImportRow {
+  name: string;
+  studentIdPrefix: string;
+  drink: string;
+  afterparty?: boolean;
+  request: string;
+}
+export interface AttendancePreviewRow {
+  sourceRowNumber: number;
+  data: AttendanceImportRow;
+  guest?: { name: string; drink: string };
+  rawAfterparty: string;
+  memberId?: string;
+  candidates: Member[];
+  editableFields: Record<AttendanceField, string>;
+  errors: string[];
+  warnings: string[];
+}
+
+const aliases: Record<AttendanceField, readonly string[]> = {
+  guestAccompany: ['게스트 동반 여부'], guestName: ['게스트 이름'], guestDrink: ['게스트 희망 음료'],
+  name: ['학번 및 이름', '학번 이름', '이름', '성명', 'name'],
+  studentIdPrefix: ['학번', '입학년도', 'student id'],
+  drink: ['주문할 음료', '마시고 싶은 음료', '음료'],
+  afterparty: ['뒤풀이에 참석하시나요?', '뒤풀이 여부', '뒤풀이 참석 여부', '뒤풀이'],
+  request: ['희망사항', '행사 관련 희망사항', '요청사항'],
+};
+const cleanHeader = (value: string) => value.normalize('NFKC').toLowerCase()
+  .replace(/[\s\u200B-\u200D\uFEFF?？]/g, '').replace(/뒷풀이/g, '뒤풀이');
+
+export function detectAttendanceMapping(headers: readonly string[]): AttendanceMapping {
+  return Object.fromEntries((Object.keys(attendanceFields) as AttendanceField[]).map(field => {
+    const matches = headers.flatMap((header, index) => aliases[field].some(alias => cleanHeader(alias) === cleanHeader(header)) ? [index] : []);
+    return [field, matches.length === 1 ? matches[0]! : matches.length === 0 && (field.startsWith('guest') || field === 'request' || field === 'studentIdPrefix') ? -2 : -1];
+  })) as AttendanceMapping;
+}
+
+export function attendanceMappingErrors(headers: readonly string[], mapping: AttendanceMapping): string[] {
+  const errors: string[] = [];
+  const used = new Set<number>();
+  for (const field of Object.keys(attendanceFields) as AttendanceField[]) {
+    const index = mapping[field] ?? -2;
+    if (index === -2 && field !== 'name') continue;
+    if (!Number.isInteger(index) || index < 0 || index >= headers.length) {
+      errors.push(`${attendanceFields[field]} 열을 연결해주세요${field === 'name' ? '.' : '. 해당 질문이 없으면 사용 안 함을 선택하세요.'}`);
+    } else if (used.has(index)) {
+      errors.push('서로 다른 항목을 같은 파일 열에 연결할 수 없습니다.');
+    } else used.add(index);
+  }
+  return errors;
+}
+
+export function parseAfterparty(value: string): boolean | undefined {
+  const normalized = value.normalize('NFKC').trim().toLowerCase().replace(/[.!！。\s]/g, '');
+  if (['네', '넵', '예', '참석', '참석함', '참석합니다', '필참', 'o', 'y', 'yes', 'true'].includes(normalized)) return true;
+  if (['아니오', '아니요', '불참', '불참합니다', '미참석', '참석안함', '참석하지않습니다', 'x', 'n', 'no', 'false'].includes(normalized)) return false;
+  return undefined;
+}
+
+const prefixOf = (value: string) => value.match(/^20(\d{2})|^(\d{2})/)?.slice(1).find(Boolean) || '';
+
+export const attendanceMemberLabel = (member: Member) => {
+  const semester = member.semester?.trim();
+  const joinedSemester = semester?.replace(/^\d{2}(\d{2}-[12])$/, '$1') || '가입학기 없음';
+  return `${member.nickname?.trim() || member.name} · ${joinedSemester}`;
+};
+
+export function previewAttendanceCsv(input: AttendanceImportInput, members: readonly Member[] = []) {
+  const { headers, rows, mapping } = input;
+  const mappingErrors = attendanceMappingErrors(headers, mapping);
+  const previewRows: AttendancePreviewRow[] = mappingErrors.length ? [] : rows.flatMap((values, index) => {
+    if (values.every(value => !value.trim())) return [];
+    const review = input.review?.[index + 2];
+    const get = (field: AttendanceField) => (review?.fields?.[field] ?? values[mapping[field] ?? -2] ?? '').trim();
+    const rawName = get('name').normalize('NFKC');
+    const combined = rawName.match(/^(\d{2}|20\d{2}\d*)\s*(?=[^\d\s])(.+)$/);
+    const name = (combined?.[2] ?? rawName).trim();
+    const rawStudentId = get('studentIdPrefix');
+    const studentIdPrefix = prefixOf(rawStudentId || combined?.[1] || '');
+    const rawAfterparty = get('afterparty');
+    const afterparty = parseAfterparty(rawAfterparty);
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    if (!name || /^\d+$/.test(name)) errors.push('이름을 확인해주세요.');
+    if (rawStudentId && !/^\d{2}(?:학번)?$|^20\d{2,}$/.test(rawStudentId)) errors.push('학번은 두 자리 입학년도 또는 전체 학번으로 입력해주세요.');
+    if (rawStudentId && combined && prefixOf(combined[1]!) !== studentIdPrefix) errors.push('이름에 포함된 학번과 학번 열이 다릅니다.');
+    if (rawAfterparty && afterparty === undefined) errors.push(`뒤풀이 응답 “${rawAfterparty}”을 해석할 수 없습니다.`);
+    if (values.length !== headers.length) errors.push('행의 열 개수가 헤더와 다릅니다.');
+    const namesakes = members.filter(member => isSameName(member.name, name));
+    const matches = namesakes.filter(member => !studentIdPrefix || prefixOf(member.studentId) === studentIdPrefix);
+    const selected = review?.memberId ? matches.find(member => member.id === review.memberId) : undefined;
+    if (review?.memberId && !selected) errors.push('선택한 회원이 현재 이름·학번과 일치하지 않습니다. 다시 선택해주세요.');
+    else if (selected && matches.filter(member => attendanceMemberLabel(member) === attendanceMemberLabel(selected)).length > 1)
+      errors.push('닉네임과 가입학기가 같은 회원이 있습니다. 회원 명부에서 닉네임을 구분한 뒤 다시 선택해주세요.');
+    else if (matches.length > 1 && !selected) errors.push('동명이인입니다. 닉네임과 가입학기를 확인하고 회원을 선택해주세요.');
+    else if (!matches.length) warnings.push(namesakes.length
+      ? '이름은 있지만 학번이 일치하지 않습니다. 수정하거나 미등록 상태로 가져오세요.'
+      : '명부에 이름이 없습니다. 수정하거나 미등록 상태로 가져오세요.');
+    const memberId = selected?.id ?? (matches.length === 1 ? matches[0]!.id : undefined);
+    const guestName = get('guestName');
+    const guestDrink = get('guestDrink');
+    const rawGuest = get('guestAccompany');
+    const guestResponse = parseAfterparty(rawGuest);
+    const hasGuest = guestResponse === true || Boolean(guestName || guestDrink);
+    if (rawGuest && guestResponse === undefined) errors.push('게스트 동반 여부를 확인해주세요.');
+    if (guestResponse === false && (guestName || guestDrink)) errors.push('게스트 불참 응답과 게스트 정보가 충돌합니다.');
+    if (hasGuest && !guestName) errors.push('게스트 이름은 필수입니다.');
+    if (hasGuest && !memberId) errors.push('게스트 초대자를 회원 명부에서 먼저 확인해주세요.');
+    if (mapping.drink >= 0 && !get('drink')) warnings.push('음료 미응답');
+    if (mapping.afterparty >= 0 && !rawAfterparty) warnings.push('뒤풀이 미응답');
+    return [{
+      sourceRowNumber: index + 2,
+      data: { name, studentIdPrefix, drink: get('drink'), request: get('request'), ...(afterparty === undefined ? {} : { afterparty }) },
+      ...(hasGuest ? { guest: { name: guestName, drink: guestDrink } } : {}),
+      rawAfterparty, ...(memberId ? { memberId } : {}), candidates: matches,
+      editableFields: Object.fromEntries((Object.keys(attendanceFields) as AttendanceField[]).map(field => [field, get(field)])) as Record<AttendanceField, string>,
+      errors, warnings,
+    }];
+  });
+  const keys = new Map<string, AttendancePreviewRow[]>();
+  for (const row of previewRows) {
+    if (row.candidates.length > 1 && !row.memberId) continue;
+    const key = row.memberId || `${row.data.studentIdPrefix}:${row.data.name.replace(/\s/g, '').toLowerCase()}`;
+    keys.set(key, [...(keys.get(key) ?? []), row]);
+  }
+  for (const duplicates of keys.values()) if (duplicates.length > 1) {
+    for (const row of duplicates) row.errors.push(`같은 부원이 중복되었습니다 (${duplicates.map(item => item.sourceRowNumber).join(', ')}행).`);
+  }
+  return {
+    rows: previewRows, mappingErrors,
+    canImport: !mappingErrors.length && previewRows.length > 0 && previewRows.every(row => !row.errors.length),
+    counts: {
+      total: previewRows.length + previewRows.filter(row => row.guest).length, guests: previewRows.filter(row => row.guest).length, errors: previewRows.filter(row => row.errors.length).length,
+      unregistered: previewRows.filter(row => !row.memberId && !row.candidates.length).length,
+      drinks: previewRows.filter(row => row.data.drink).length + previewRows.filter(row => row.guest?.drink).length,
+      attending: previewRows.filter(row => row.data.afterparty === true).length,
+      absent: previewRows.filter(row => row.data.afterparty === false).length,
+      unanswered: previewRows.filter(row => row.data.afterparty === undefined).length,
+    },
+  };
+}

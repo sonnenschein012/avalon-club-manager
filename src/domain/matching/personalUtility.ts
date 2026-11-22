@@ -1,0 +1,207 @@
+import type { Attendee, Member, Session, SessionGroup } from '../../types';
+import { attendeeMember, isGuest } from '../attendance/guests';
+import { getLocalDateKey } from '../attendance/sessionMetadata';
+import { resolveCompanionRequests, type AbsentRequest, type RequestChoice, type RequestSelections } from './companionRequests';
+
+// Initial operating values; observational satisfaction calibration remains open.
+export const REVIEW_PARAMETERS = Object.freeze({
+  // First gains 0.9 / 0.25; each additional gain retains 25% / 65%.
+  sameA: 1.2, sameK: Math.log(4), otherA: 5 / 7, otherK: -Math.log(0.65),
+  yearB: 3, yearH: 0.3, yearT: 0.75, attenuationK: 0.25,
+  reunionRho: 0.35, reunionPower: 2, reunionA: 0.6,
+  protectionS: 2,
+});
+export type UtilityParameters = { [K in keyof typeof REVIEW_PARAMETERS]: number };
+export interface UtilityPerson {
+  id: string; memberId: string | null; name: string; gender: '남' | '여' | null;
+  year: number | null; board: boolean;
+}
+export interface UtilityContext {
+  people: Map<string, UtilityPerson>;
+  requests: Map<string, [string, string]>;
+  absentRequests: AbsentRequest[];
+  requestChoices: RequestChoice[];
+  exposures: Map<string, Map<string, number>>;
+  parameters: UtilityParameters;
+}
+interface PersonUtility {
+  id: string; name: string; requestCount: number; sameUtility: number; otherUtility: number;
+  yearCost: number; attenuation: number; reunionCost: number; baseUtility: number; utility: number;
+}
+export interface PersonScore extends PersonUtility {
+  convertedUtility: number; protectionWeight: number; effectiveWeight: number; protectedUtility: number;
+}
+export interface AssignmentScore {
+  requestProduct: bigint; requestScore: number; boardMissing: number; boardMissingNonFour: number;
+  welfare: number; totalUtility: number; people: PersonScore[];
+}
+export const pairKey = (a: string, b: string) => JSON.stringify([a, b].sort());
+const saturation = (n: number, a: number, k: number) => -a * Math.expm1(-k * n);
+
+/** Protect unattenuated utilities, then attenuate each contribution.
+ * A weighted center keeps the actual marginal effect w_i times a factor in [1, 2].
+ * An unweighted center followed by unequal weights can produce negative derivatives.
+ * Contributions decompose welfare; they are not utility times marginal importance.
+ */
+export function relativeProtection(utilities: number[], scale: number, attenuations: number[] = utilities.map(() => 1)) {
+  if (!Number.isFinite(scale) || scale <= 0 || utilities.some(u => !Number.isFinite(u)) ||
+    attenuations.length !== utilities.length || attenuations.some(w => !Number.isFinite(w) || w < 0 || w > 1)) throw new Error('보호 평가 입력을 확인해주세요.');
+  // Normalize before averaging to preserve extremely small (or underflowed) weights.
+  const maximum = attenuations.reduce((max, w) => Math.max(max, w), 0);
+  const normalized = attenuations.map(w => maximum ? w / maximum : 1);
+  const mass = normalized.reduce((sum, w) => sum + w, 0) || 1;
+  const mean = utilities.reduce((sum, u, i) => sum + u * (normalized[i]! / mass), 0);
+  const converted = utilities.map(u => (u - mean) / scale);
+  const tangents = converted.map(z => Math.tanh(z / 2));
+  const averageTangent = tangents.reduce((sum, t, i) => sum + t * (normalized[i]! / mass), 0);
+  const weights = tangents.map(t => 1.5 - 0.25 * (t - averageTangent));
+  const effectiveWeights = weights.map((weight, i) => attenuations[i]! * weight);
+  const contributions = utilities.map((u, i) => {
+    const x = Math.abs(converted[i]! / 2);
+    const logCosh = x + Math.log1p(Math.exp(-2 * x)) - Math.LN2;
+    return attenuations[i]! * (1.5 * u - 0.5 * scale * logCosh);
+  });
+  return { mean, converted, weights, effectiveWeights, contributions, welfare: contributions.reduce((sum, c) => sum + c, 0) };
+}
+
+function protectPeople(people: PersonUtility[], parameters: UtilityParameters) {
+  const protection = relativeProtection(people.map(p => p.baseUtility), parameters.protectionS, people.map(p => p.attenuation));
+  // Reunion costs remain unattenuated: restore the portion lost by scaling the contribution.
+  const contributions = people.map((person, i) => protection.contributions[i]! - (1 - person.attenuation) * person.reunionCost);
+  return {
+    welfare: contributions.reduce((sum, contribution) => sum + contribution, 0),
+    people: people.map((person, i): PersonScore => ({ ...person,
+      convertedUtility: protection.converted[i]!, protectionWeight: protection.weights[i]!,
+      effectiveWeight: protection.effectiveWeights[i]!, protectedUtility: contributions[i]!,
+    })),
+  };
+}
+
+export function validateUtilityParameters(p: UtilityParameters) {
+  for (const name of Object.keys(REVIEW_PARAMETERS) as (keyof UtilityParameters)[]) {
+    if (!Number.isFinite(p[name]) || p[name] <= 0) throw new Error('효용 파라미터를 확인해주세요.');
+  }
+  if (p.reunionRho >= 1 || p.reunionPower <= 1 || p.sameK <= p.otherK ||
+    saturation(1, p.sameA, p.sameK) <= saturation(1, p.otherA, p.otherK)) throw new Error('효용 관계식의 파라미터 조건을 확인해주세요.');
+}
+
+/** IDs in this context are attendee IDs; stored history is converted via memberId. */
+export function buildUtilityContext(input: {
+  attendees: Attendee[]; members: Member[]; sessions: Session[]; assignmentDate: string; requestSelections?: RequestSelections;
+}, parameters: UtilityParameters = REVIEW_PARAMETERS): UtilityContext {
+  validateUtilityParameters(parameters);
+  const { attendees, members, sessions, assignmentDate } = input;
+  const people = new Map<string, UtilityPerson>();
+  const memberToAttendee = new Map<string, string>();
+  for (const attendee of attendees) {
+    if (attendee.status === '결석') continue;
+    if (isGuest(attendee)) {
+      people.set(attendee.id, { id: attendee.id, memberId: null, name: attendee.name, gender: null, year: null, board: false });
+      continue;
+    }
+    const member = attendeeMember(attendee, members);
+    if (!member) continue;
+    if (memberToAttendee.has(member.id)) throw new Error(`${member.name}님의 출석 항목이 중복됩니다. 명단을 확인해주세요.`);
+    const match = member.studentId?.match(/^20(\d{2})|^(\d{2})/);
+    const yearText = match?.[1] ?? match?.[2];
+    people.set(attendee.id, {
+      id: attendee.id, memberId: member.id, name: member.name,
+      gender: member.gender === '남' || member.gender === '여' ? member.gender : null,
+      year: yearText === undefined ? null : Number(yearText), board: Boolean(member.isBoardMember),
+    });
+    memberToAttendee.set(member.id, attendee.id);
+  }
+  const requests = new Map<string, [string, string]>();
+  const resolved = resolveCompanionRequests({ attendees, members, memberToAttendee, assignmentDate, selections: input.requestSelections ?? {} });
+  for (const pair of resolved.requests) requests.set(pairKey(...pair), pair);
+  const past = sessions.map(session => ({ session, date: session.date?.toDate?.() }))
+    .filter((item): item is { session: Session; date: Date } => Boolean(item.date && Number.isFinite(item.date.getTime()) && getLocalDateKey(item.date) < assignmentDate))
+    .sort((a, b) => b.date.getTime() - a.date.getTime() || a.session.id.localeCompare(b.session.id));
+  const exposures: UtilityContext['exposures'] = new Map();
+  for (const person of people.values()) {
+    const exposure = new Map<string, number>();
+    let attendedSince = 0;
+    for (const { session } of past) {
+      const group = session.groups.find(g => person.memberId !== null && g.memberIds.includes(person.memberId));
+      if (!group) continue;
+      for (const memberId of new Set(group.memberIds)) {
+        const peerId = memberToAttendee.get(memberId);
+        if (peerId && peerId !== person.id) exposure.set(peerId, (exposure.get(peerId) ?? 0) + parameters.reunionRho ** attendedSince);
+      }
+      attendedSince++;
+    }
+    exposures.set(person.id, exposure);
+  }
+  return { people, requests, absentRequests: resolved.absentRequests, requestChoices: resolved.choices, exposures, parameters };
+}
+
+export function evaluateUtilityGroup(ids: string[], context: UtilityContext): AssignmentScore {
+  const p = context.parameters;
+  const members = [...ids].sort().map(id => {
+    const person = context.people.get(id);
+    if (!person) throw new Error('조에 미등록 또는 결석 인원이 있습니다. 명단을 확인해주세요.');
+    return person;
+  });
+  const people = members.map(person => {
+    const peers = members.filter(peer => peer.id !== person.id);
+    const requestCount = peers.filter(peer => context.requests.has(pairKey(person.id, peer.id))).length;
+    const sameCount = person.gender === null ? 0 : peers.filter(peer => peer.gender === person.gender).length;
+    const otherCount = person.gender === null ? 0 : peers.filter(peer => peer.gender !== null && peer.gender !== person.gender).length;
+    const sameUtility = saturation(sameCount, p.sameA, p.sameK);
+    const otherUtility = saturation(otherCount, p.otherA, p.otherK);
+    const ageCosts = person.year === null ? [] : peers.filter(peer => peer.year !== null)
+      .map(peer => saturation(Math.abs(peer.year! - person.year!), p.yearB, p.yearH));
+    const minimum = ageCosts.length ? Math.min(...ageCosts) : 0;
+    const yearCost = ageCosts.length ? minimum - p.yearT * Math.log(ageCosts.reduce((sum, cost) => sum + Math.exp(-(cost - minimum) / p.yearT), 0) / ageCosts.length) : 0;
+    const reunionCost = peers.reduce((sum, peer) => sum + (context.requests.has(pairKey(person.id, peer.id)) ? 0 :
+      p.reunionA * (context.exposures.get(person.id)?.get(peer.id) ?? 0) ** p.reunionPower), 0);
+    const attenuation = Math.exp(-p.attenuationK * requestCount);
+    const baseUtility = sameUtility + otherUtility - yearCost - reunionCost;
+    const utility = attenuation * (sameUtility + otherUtility - yearCost) - reunionCost;
+    return { id: person.id, name: person.name, requestCount, sameUtility, otherUtility, yearCost, attenuation, reunionCost, baseUtility, utility };
+  });
+  const uncovered = members.length > 0 && !members.some(person => person.board);
+  return {
+    requestProduct: people.reduce((product, person) => product * BigInt(1 + person.requestCount), 1n),
+    requestScore: people.reduce((sum, person) => sum + Math.log1p(person.requestCount), 0),
+    boardMissing: Number(uncovered), boardMissingNonFour: Number(uncovered && ids.length !== 4),
+    totalUtility: people.reduce((sum, person) => sum + person.utility, 0), ...protectPeople(people.filter(person => context.people.get(person.id)!.memberId !== null), p),
+  };
+}
+
+export function combineScores(scores: AssignmentScore[], parameters: UtilityParameters = REVIEW_PARAMETERS): AssignmentScore {
+  const total = scores.reduce((total, score) => ({
+    requestProduct: total.requestProduct * score.requestProduct,
+    requestScore: total.requestScore + score.requestScore,
+    boardMissing: total.boardMissing + score.boardMissing,
+    boardMissingNonFour: total.boardMissingNonFour + score.boardMissingNonFour,
+    totalUtility: total.totalUtility + score.totalUtility,
+    people: [...total.people, ...score.people],
+  }), { requestProduct: 1n, requestScore: 0, boardMissing: 0, boardMissingNonFour: 0, totalUtility: 0, people: [] as PersonScore[] });
+  // Cached group evaluations contain local decompositions; always recompute
+  // protection from ALL raw personal utilities, including untouched groups.
+  total.people.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  return { ...total, ...protectPeople(total.people, parameters) };
+}
+
+// Negative means a is preferred; explicit requests cannot be outweighed.
+export function compareUtility(a: AssignmentScore, b: AssignmentScore): number {
+  if (a.requestProduct !== b.requestProduct) return a.requestProduct > b.requestProduct ? -1 : 1;
+  return a.boardMissing - b.boardMissing || a.boardMissingNonFour - b.boardMissingNonFour || b.welfare - a.welfare;
+}
+
+export function getRequestNotices(groups: SessionGroup[], context: UtilityContext, fixed: Record<string, string> = {}, relevantIds?: string[]): string[] {
+  const assigned = new Map(groups.flatMap(group => group.memberIds.map(id => [id, group.id] as const)));
+  const relevant = relevantIds ? new Set(relevantIds) : null;
+  const notices = context.absentRequests.filter(r => !relevant || relevant.has(r.requesterId))
+    .map(r => `${r.requester}님이 요청한 ${r.recipient}님은 불참하여 동반 요청 평가에서 제외했습니다.`);
+  for (const [a, b] of context.requests.values()) {
+    if (relevant && !relevant.has(a) && !relevant.has(b)) continue;
+    if (assigned.has(a) && assigned.get(a) === assigned.get(b)) continue;
+    const names = `${context.people.get(a)!.name}님과 ${context.people.get(b)!.name}님`;
+    const pinnedApart = fixed[a] && fixed[b] && fixed[a] !== fixed[b] && assigned.get(a) === fixed[a] && assigned.get(b) === fixed[b];
+    notices.push(pinnedApart ? `동반 요청 미충족: ${names}은 수동 배치를 유지하여 서로 다른 조에 배치되었습니다.` :
+      `동반 요청 미충족: ${names}이 현재 같은 조에 배치되지 않았습니다.`);
+  }
+  return notices;
+}

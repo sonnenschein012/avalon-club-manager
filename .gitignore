@@ -1,0 +1,40 @@
+node_modules/
+build/
+dist/
+coverage/
+playwright-report/
+test-results/
+output/
+.DS_Store
+*.log
+.env*
+
+# Auto-generated build artifacts / caches (do not commit)
+stats.html
+.firebase/
+.demo-runtime/
+.codex-deploy-audit-*
+.codex-tmp-deploy-*
+agent_docs/
+.codex_workflow_hidden_resources/
+
+# Local Codex integration
+.codex/
+
+# Project-local Graphify runtime and unpublished analysis candidates.
+.graphify-runtime/
+__pycache__/
+*.pyc
+.graphify-work/
+
+# Share only the reviewed portable Graphify bundle.
+graphify-out/*
+!graphify-out/graph.json
+!graphify-out/graph.html
+!graphify-out/GRAPH_REPORT.md
+!graphify-out/manifest.json
+!graphify-out/verification-state.json
+!graphify-out/semantic-review.json
+!graphify-out/scope.json
+
+.ua/

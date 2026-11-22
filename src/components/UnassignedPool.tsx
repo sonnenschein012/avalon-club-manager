@@ -1,0 +1,105 @@
+import { guestRelationLabel, isGuest } from '../domain/attendance/guests';
+import React from 'react';
+import { Attendee, Member } from '../types';
+import { X } from 'lucide-react';
+import { cn } from '../lib/utils';
+import BoardMemberBadge from './BoardMemberBadge';
+import AttendanceNotice from './AttendanceNotice';
+import { AttendanceDraggableCard, AttendanceDropZone } from './AttendanceDragAndDrop';
+
+export interface UnassignedPoolProps {
+  unassignedAttendees: Attendee[];
+  attendees?: Attendee[];
+  getMemberFromInfo: (name?: string, studentIdPrefix?: string, memberId?: string | null) => Member | undefined;
+  memberAttendanceCount: Record<string, number>;
+  onManualAddOpen: () => void;
+  onQuickAddMember: (attendee: Attendee) => void;
+  onDeleteAttendee: (attendee: Attendee) => void;
+}
+
+export default function UnassignedPool({
+  unassignedAttendees,
+  attendees = unassignedAttendees,
+  getMemberFromInfo,
+  memberAttendanceCount,
+  onManualAddOpen,
+  onQuickAddMember,
+  onDeleteAttendee,
+}: UnassignedPoolProps) {
+  return (
+    <div className="md:col-span-1 bg-white rounded-2xl shadow-sm flex min-h-0 flex-col overflow-hidden self-start max-h-[50dvh] md:sticky md:top-4 md:max-h-[70dvh]">
+      <div className="p-4 border-b border-slate-50 flex shrink-0 flex-wrap gap-2 justify-between items-center bg-slate-50/50">
+        <h3 className="text-xs font-bold text-slate-400 uppercase">출석 명단 / 미배정 ({unassignedAttendees.length})</h3>
+        <button 
+          onClick={onManualAddOpen}
+          className="text-[10px] font-bold bg-navy text-white hover:bg-slate-800 px-2 py-1 rounded transition"
+        >
+          + 명단 추가
+        </button>
+      </div>
+      <div
+        data-attendance-pool
+        role="region" aria-label="미배정 출석 명단" tabIndex={0}
+        className="min-h-0 min-w-0 overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable] focus-visible:outline-2 focus-visible:outline-navy focus-visible:-outline-offset-2"
+      >
+      <AttendanceDropZone groupId={null} className="p-4 space-y-2 min-h-full">
+        {unassignedAttendees.length === 0 && (
+          <p className="text-[10px] text-slate-300 italic text-center p-4">명단이 없습니다.</p>
+        )}
+        {unassignedAttendees.map(a => {
+          const m = isGuest(a) ? undefined : getMemberFromInfo(a.name, a.studentIdPrefix, a.memberId);
+          const isRegistered = !!m || isGuest(a);
+
+          return (
+            <AttendanceDraggableCard
+              key={a.id} 
+              attendeeId={a.id}
+              disabled={!isRegistered}
+              className={cn(
+                "p-3 bg-slate-50 rounded-lg flex flex-col gap-1 transition-colors relative",
+                isRegistered ? "cursor-grab active:cursor-grabbing hover:border-transparent" : "opacity-80 grayscale"
+              )}
+            >
+              <div className="flex justify-between items-start">
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <p className="truncate text-xs font-black text-slate-800">{m?.nickname || a.name}</p>
+                    {m?.isBoardMember && <BoardMemberBadge />}
+                  </div>
+                  {a.studentIdPrefix && <p className="text-[10px] text-slate-400">{a.studentIdPrefix}학번</p>}
+                </div>
+                <div className="flex gap-1 items-center">
+                  {!isRegistered && (
+                    <button 
+                      onClick={() => onQuickAddMember(a)}
+                      className="text-[9px] px-2 py-1 bg-orange-100 text-orange-600 rounded whitespace-nowrap hover:bg-orange-200 font-bold"
+                    >
+                      + 멤버 추가
+                    </button>
+                  )}
+                  <button 
+                    onClick={() => onDeleteAttendee(a)}
+                    className="p-1 text-slate-300 hover:text-red-500 rounded-full hover:bg-red-50 transition"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              </div>
+              
+              <div className="flex gap-2 text-[10px] text-slate-500 font-bold">
+                {a.drink && <span>🥤 {a.drink}</span>}
+                {a.afterparty && <span>🍻 뒷풀이참석</span>}
+              </div>
+              <p className="text-[10px] text-slate-500">{guestRelationLabel(a, attendees)}</p>
+              {a.request && <p className="text-[10px] text-orange-500 mt-1 italic leading-tight bg-orange-50 p-1.5 rounded">"{a.request}"</p>}
+              {!isGuest(a) && (!isRegistered || memberAttendanceCount[m?.id || ''] === 0) && (
+                <AttendanceNotice className="mt-1 w-fit">처음 왔어요</AttendanceNotice>
+              )}
+            </AttendanceDraggableCard>
+          );
+        })}
+      </AttendanceDropZone>
+      </div>
+    </div>
+  );
+}

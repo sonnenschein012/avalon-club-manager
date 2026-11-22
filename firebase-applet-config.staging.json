@@ -1,0 +1,9 @@
+{
+  "projectId": "avalon-manager-staging",
+  "appId": "1:547997059939:web:aaa02a4fe8524677bca156",
+  "apiKey": "AIzaSyDD__TEgn5GTncyROLtZGPOo6UuwWFkotM",
+  "authDomain": "avalon-manager-staging.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "avalon-manager-staging.firebasestorage.app",
+  "messagingSenderId": "547997059939"
+}
