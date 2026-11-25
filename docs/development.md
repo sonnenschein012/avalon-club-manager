@@ -118,3 +118,13 @@ Graphify의 검증된 `graphify-out/` 허용 목록만 Git에 공유하며 설�
 ## 게스트 참석
 
 [게스트 참석과 익명 세션 기록](guests.md)에 당일 참석자/초대 관계, 운영 snapshot과 익명 세션의 경계, CSV 및 통계 호환을 정리했습니다.
+
+## 전시 집계와 공개 조회
+
+`src/domain/exhibition/collection.ts`는 운영 세션에서 전시 기간에 해당하는 개인별 기록과 이름 조회 키를 계산합니다. 날짜는 한국 시간으로 해석하고 공동 플레이는 같은 조에서 나온 게임으로 집계합니다. 운영 게임 ID는 지정된 핀으로 매핑하며 미매핑 게임과 누락 회원 ID는 운영진 확인용 결과로 반환합니다.
+
+부원 화면은 `exhibitionAccess/{exhibitionId}`에서 현재 데이터 묶음 ID를 읽은 뒤 `generations/{generationId}/names/{nameKey}`와 `profiles/{profileId}`를 개별 조회합니다. Firestore Rules는 현재 활성 데이터 묶음의 개별 조회를 허용합니다. 이름 키는 이름을 입력해 계산할 수 있으므로 전시 열람에 로그인은 필요하지 않습니다. 쓰기는 기존 `admin`과 `master` 권한을 사용합니다. 세션 저장과 회원 표시 정보 변경은 같은 커밋에 `exhibitionSync/source`의 변경 번호를 증가시킵니다. 관리자 화면이 처리기를 실행하며 최신 번호의 전시 데이터를 준비한 후 트랜잭션으로 공개 조회 대상을 전환합니다. 연결이 끊기면 재시도하거나 다음 관리자 접속에서 재개합니다. `exhibitionSettings`와 `exhibitionDiagnostics`는 관리자 전용입니다. `saveExhibitionSettings`로 설정을 저장하면 새 계산을 요청하며, 비공개 전환은 같은 커밋에서 공개 조회를 중단합니다. Firestore 콘솔에서 원본을 직접 바꾼 경우에는 별도 갱신 요청이 필요합니다.
+
+부원용 화면은 `exhibition/`의 별도 Vite 진입점에서 빌드합니다. `npm run exhibition:dev`는 로컬 Firestore Emulator(127.0.0.1:8080)의 전시 데이터만 조회합니다. 전시 ID 기본값은 `avalon`이며 필요 시 `VITE_EXHIBITION_ID`로 지정합니다. `npm run exhibition:build`는 `exhibition/dist/`에 운영 연결용 정적 파일을 생성하고, `npm run exhibition:build -- --mode staging`은 staging 연결용 파일을 같은 위치에 생성합니다. 기존 운영 앱 빌드와 배포 디렉터리는 별개입니다. 핀·글꼴·배경은 원본 HTML에서 바이트 그대로 추출했으며 이름 조회와 개인 기록은 Firestore에서 읽습니다.
+
+전시 관리자 화면은 `exhibition-admin/`에 있습니다. `npm run exhibition:admin:dev`는 기존 운영 앱의 로컬 Auth·Firestore Emulator를 사용하고, `npm run exhibition:admin:build`는 `exhibition-admin/dist/`로 별도 빌드합니다. Firebase에 등록된 기존 관리자 계정으로 전시 ID를 열어 기간, 공개 상태, 게임 매핑과 설명을 저장하고 갱신 상태를 확인할 수 있습니다.

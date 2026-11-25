@@ -384,6 +384,56 @@ service cloud.firestore {
       allow update: if canManageInterviews() || isValidPublicResponseUpdate() || isValidPublicFirstAccessUpdate();
     }
 
+    match /exhibitionSync/{id} {
+      allow get: if isAdmin() && id in ['source', 'progress'];
+      allow create, update: if isAdmin() && id in ['source', 'progress'] &&
+        request.resource.data.keys().hasOnly(['revision']) &&
+        request.resource.data.revision is int && request.resource.data.revision > 0 &&
+        (id == 'progress' || request.resource.data.revision ==
+          (resource == null ? 1 : resource.data.revision + 1));
+    }
+
+    match /exhibitionSettings/{id} {
+      allow read: if isAdmin();
+      allow create, update: if isAdmin() &&
+        request.resource.data.keys().hasOnly(['enabled', 'period', 'gameMapping', 'descriptions']) &&
+        request.resource.data.enabled is bool && request.resource.data.period is map &&
+        request.resource.data.gameMapping is list &&
+        request.resource.data.get('descriptions', {}) is map;
+    }
+
+    match /exhibitionDiagnostics/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    function canReadExhibitionGeneration(exhibitionId, generationId) {
+      let current = get(/databases/$(database)/documents/exhibitionAccess/$(exhibitionId));
+      return current.data.enabled == true && current.data.generationId == generationId;
+    }
+
+    // Public documents contain only the projected exhibition data.
+    match /exhibitionAccess/{exhibitionId} {
+      allow get: if isAdmin() || resource.data.enabled == true;
+      allow list, delete: if isAdmin();
+      allow create, update: if isAdmin() &&
+        request.resource.data.keys().hasOnly(['enabled', 'generationId', 'descriptions']) &&
+        request.resource.data.enabled is bool &&
+        request.resource.data.generationId is string &&
+        request.resource.data.get('descriptions', {}) is map;
+    }
+
+    match /exhibitionAccess/{exhibitionId}/generations/{generationId}/{kind}/{entryId} {
+      allow get: if kind in ['names', 'profiles'] &&
+        (isAdmin() || canReadExhibitionGeneration(exhibitionId, generationId));
+      allow list, delete: if kind in ['names', 'profiles'] && isAdmin();
+      allow create, update: if isAdmin() && (
+        (kind == 'names' && request.resource.data.keys().hasOnly(['candidates']) &&
+          request.resource.data.candidates is list) ||
+        (kind == 'profiles' && request.resource.data.keys().hasOnly(['name', 'days']) &&
+          request.resource.data.name is string && request.resource.data.days is list)
+      );
+    }
+
     // 6. Default deny for all other paths
     match /{document=**} {
       allow read, write: if false;

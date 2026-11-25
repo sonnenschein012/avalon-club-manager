@@ -6,6 +6,7 @@ const addAuditEventToTransaction = vi.hoisted(() => vi.fn());
 vi.mock('../lib/firebase', () => ({ db: {}, auth: { currentUser: { email: 'admin@example.com' } } }));
 vi.mock('./auditService', () => ({ addAuditEventToTransaction }));
 vi.mock('firebase/firestore', () => ({
+  increment: () => 'increment',
   collection: (_db: unknown, ...path: string[]) => path.join('/'),
   doc: (_db: unknown, ...path: string[]) => path.length ? path.join('/') : `${_db}/new-version`,
   serverTimestamp: () => 'server-time',

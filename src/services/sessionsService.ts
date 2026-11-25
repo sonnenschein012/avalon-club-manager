@@ -1,4 +1,5 @@
-import { collection, doc, getDoc, getDocs, query, where, deleteField, Timestamp, writeBatch, runTransaction } from 'firebase/firestore';
+import { requestExhibitionRefresh } from './exhibitionRevision';
+import { collection, doc, getDocs, query, where, deleteField, Timestamp, writeBatch, runTransaction } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import type { Session, StoredSessionGroup } from '../types';
 import type { ImportedSession } from '../domain/sessions/sessionCsv';
@@ -48,7 +49,10 @@ export async function importSessionRecords(sessions: readonly ImportedSession[])
         groups: session.groups.map(group => normalizeSessionGroup({ ...group, id: group.id || doc(collection(db, 'sessions')).id })),
       });
     });
-    if (records.length) addAuditEventToTransaction(transaction, { category: 'session', action: 'session.imported', targetLabel: `모임 기록 ${records.length}개`, count: records.length });
+    if (records.length) {
+      requestExhibitionRefresh(transaction);
+      addAuditEventToTransaction(transaction, { category: 'session', action: 'session.imported', targetLabel: `모임 기록 ${records.length}개`, count: records.length });
+    }
   });
 }
 
@@ -68,6 +72,7 @@ export async function createSessionRecord(draft: SessionDraft, boardMemberIds: s
     targetLabel: draft.name,
     detail: `${draft.date} · ${groupsSummary(draft.groups)}`,
   });
+  requestExhibitionRefresh(batch);
   await batch.commit();
 }
 
@@ -77,28 +82,29 @@ export async function updateSessionRecord(
   initialGroups: readonly StoredSessionGroup[] | null,
 ) {
   const ref = doc(db, 'sessions', sessionId);
-  const snapshot = await getDoc(ref);
-  const current = snapshot.exists() ? snapshot.data() as Session : undefined;
-  if (!current) throw new Error('세션을 찾을 수 없습니다.');
-  const nextGroups = mergeSessionGroups(current.groups || [], initialGroups, draft.groups);
-  const batch = writeBatch(db);
-  batch.update(ref, {
-    name: draft.name,
-    date: Timestamp.fromDate(new Date(draft.date)),
-    groups: nextGroups,
-    ...(current.boardMemberIds !== undefined ? { boardMemberIds: current.boardMemberIds } : {}),
-  });
-  const changes = sessionChanges(current, draft, nextGroups);
-  if (changes.length > 0) {
-    addAuditEventToBatch(batch, {
-      category: 'session',
-      action: 'session.updated',
-      targetId: sessionId,
-      targetLabel: draft.name,
-      changes,
+  await runTransaction(db, async transaction => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists() ? snapshot.data() as Session : undefined;
+    if (!current) throw new Error('세션을 찾을 수 없습니다.');
+    const nextGroups = mergeSessionGroups(current.groups || [], initialGroups, draft.groups);
+    transaction.update(ref, {
+      name: draft.name,
+      date: Timestamp.fromDate(new Date(draft.date)),
+      groups: nextGroups,
+      ...(current.boardMemberIds !== undefined ? { boardMemberIds: current.boardMemberIds } : {}),
     });
-  }
-  await batch.commit();
+    const changes = sessionChanges(current, draft, nextGroups);
+    if (changes.length > 0) {
+      addAuditEventToTransaction(transaction, {
+        category: 'session',
+        action: 'session.updated',
+        targetId: sessionId,
+        targetLabel: draft.name,
+        changes,
+      });
+    }
+    requestExhibitionRefresh(transaction);
+  });
 }
 
 export async function updateSessionGroupGames(
@@ -108,38 +114,39 @@ export async function updateSessionGroupGames(
   gameTitlesById: ReadonlyMap<string, string> = new Map(),
 ) {
   const ref = doc(db, 'sessions', sessionId);
-  const snapshot = await getDoc(ref);
-  if (!snapshot.exists()) throw new Error('세션을 찾을 수 없습니다.');
-  const groups = (snapshot.data() as Session).groups || [];
-  const targetGroup = groups.find(group => group.id === groupId);
-  if (!targetGroup) throw new Error('해당 조를 찾을 수 없습니다.');
-  const gameLabels = (ids: string[]) => ids.map(id => gameTitlesById.get(id) ?? id).join(', ') || '없음';
-  const batch = writeBatch(db);
-  batch.update(ref, {
-    groups: groups.map(group => group.id === groupId ? { ...group, gameIds } : group),
-  });
-  const changes = [{
+  await runTransaction(db, async transaction => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists()) throw new Error('세션을 찾을 수 없습니다.');
+    const groups = (snapshot.data() as Session).groups || [];
+    const targetGroup = groups.find(group => group.id === groupId);
+    if (!targetGroup) throw new Error('해당 조를 찾을 수 없습니다.');
+    const gameLabels = (ids: string[]) => ids.map(id => gameTitlesById.get(id) ?? id).join(', ') || '없음';
+    transaction.update(ref, {
+      groups: groups.map(group => group.id === groupId ? { ...group, gameIds } : group),
+    });
+    const changes = [{
       field: 'gameIds',
       label: '플레이 게임',
       before: gameLabels(targetGroup.gameIds || []),
       after: gameLabels(gameIds),
-  }].filter(change => change.before !== change.after);
-  if (changes.length > 0) {
-    addAuditEventToBatch(batch, {
-      category: 'session',
-      action: 'session.group_games_updated',
-      targetId: sessionId,
-      targetLabel: `${(snapshot.data() as Session).name} · ${targetGroup.name || '조'}`,
-      changes,
-    });
-  }
-  await batch.commit();
+    }].filter(change => change.before !== change.after);
+    if (changes.length > 0) {
+      addAuditEventToTransaction(transaction, {
+        category: 'session',
+        action: 'session.group_games_updated',
+        targetId: sessionId,
+        targetLabel: `${(snapshot.data() as Session).name} · ${targetGroup.name || '조'}`,
+        changes,
+      });
+    }
+    requestExhibitionRefresh(transaction);
+  });
 }
 
 export async function deleteSessionRecord(sessionId: string, sessionName = '모임 기록') {
   const linkedPlannings = await getDocs(query(collection(db, 'DailyPlannings'), where('sessionId', '==', sessionId)));
   // Keep deletion and detachment atomic; never delete only part of the links.
-  if (linkedPlannings.size + 2 > 500) throw new Error('연결된 모임이 너무 많아 삭제할 수 없습니다.');
+  if (linkedPlannings.size + 3 > 500) throw new Error('연결된 모임이 너무 많아 삭제할 수 없습니다.');
   const batch = writeBatch(db);
   linkedPlannings.docs.forEach(planning => batch.update(planning.ref, { sessionId: deleteField() }));
   batch.delete(doc(db, 'sessions', sessionId));
@@ -149,5 +156,6 @@ export async function deleteSessionRecord(sessionId: string, sessionName = '모�
     targetId: sessionId,
     targetLabel: sessionName,
   });
+  requestExhibitionRefresh(batch);
   await batch.commit();
 }

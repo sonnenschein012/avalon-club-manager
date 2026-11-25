@@ -1,3 +1,4 @@
+import { requestExhibitionRefresh } from './exhibitionRevision';
 import { runTransaction, writeBatch, doc, collection, getDocs, serverTimestamp, deleteDoc, Timestamp } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { Attendee, Member } from '../types';
@@ -41,6 +42,7 @@ export async function quickAddMemberRecord(attendee: Attendee, input: Attendance
       targetLabel: data.name,
       detail: `출석 명단에서 확인 후 등록 · 학번 ${data.studentId}`,
     });
+    requestExhibitionRefresh(batch);
     await batch.commit();
     toast.success(`${attendee.name}님이 멤버로 추가되었습니다.`);
     return true;

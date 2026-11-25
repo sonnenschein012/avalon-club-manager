@@ -189,7 +189,8 @@ describe('attendance working draft', () => {
     expect(archiveDailyPlanning).toHaveBeenCalledWith(expect.anything(), '2026-09-12', previous, '모임 다시 시작 전');
     expect(mocks.get).toHaveBeenCalledTimes(1);
     expect(mocks.update.mock.calls.every(call => call[0] === 'attendees/a1')).toBe(true);
-    expect(mocks.set).toHaveBeenCalledTimes(2);
+    expect(mocks.set).toHaveBeenCalledTimes(3);
+    expect(mocks.set).toHaveBeenCalledWith('exhibitionSync/source', { revision: expect.anything() }, { merge: true });
     expect(mocks.set.mock.calls[0]![1]).toEqual(expect.objectContaining({
       name: '편성하던 모임', sessionId: 'new-session', createdAt: 'original-time',
       attendees: [expect.objectContaining({ drink: '아이스티' })],

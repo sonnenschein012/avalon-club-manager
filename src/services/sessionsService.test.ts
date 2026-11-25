@@ -1,24 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getDoc, getDocs } from 'firebase/firestore';
+import { getDocs } from 'firebase/firestore';
 import { deleteSessionRecord, importSessionRecords, updateSessionGroupGames, updateSessionRecord } from './sessionsService';
 
 const batch = vi.hoisted(() => ({
   set: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
+  get: vi.fn(),
   commit: vi.fn().mockResolvedValue(undefined),
 }));
 const addAuditEventToBatch = vi.hoisted(() => vi.fn());
 vi.mock('../lib/firebase', () => ({ db: {} }));
 vi.mock('../lib/chunkBatch', () => ({ commitBatchesInChunks: vi.fn() }));
 vi.mock('./auditService', () => ({
-  addAuditEventToBatch, addAuditEventToTransaction: vi.fn(),
+  addAuditEventToBatch, addAuditEventToTransaction: addAuditEventToBatch,
   createAuditEventOperation: vi.fn(() => ({ type: 'set', ref: 'audit', data: {} })),
 }));
 vi.mock('firebase/firestore', () => ({
-  collection: vi.fn(), doc: vi.fn(), getDoc: vi.fn(), writeBatch: vi.fn(() => batch),
+  collection: vi.fn(), doc: vi.fn(), increment: () => 'increment', writeBatch: vi.fn(() => batch),
   getDocs: vi.fn(), query: vi.fn(), where: vi.fn(), deleteField: () => 'delete-field',
-  runTransaction: async (_db: unknown, action: (tx: unknown) => Promise<void>) => action({ get: async () => ({ exists: () => false }), set: batch.set }),
+  runTransaction: async (_db: unknown, action: (tx: unknown) => Promise<void>) => action(batch),
   Timestamp: { fromDate: (date: Date) => date },
 }));
 
@@ -46,6 +47,7 @@ describe('session persistence boundaries', () => {
   });
 
   it('retains absent versus explicit empty imported role snapshots', async () => {
+    batch.get.mockResolvedValue({ exists: () => false });
     await importSessionRecords([
       { name: 'legacy', date: '2026-09-02', groups: [] },
       { name: 'current', date: '2026-09-02', groups: [], boardMemberIds: [] },
@@ -57,7 +59,7 @@ describe('session persistence boundaries', () => {
   it('keeps the stored board snapshot and untouched group edits when saving a session', async () => {
     const initial = { id: 'group', memberIds: ['member'], gameIds: [] };
     const remote = { ...initial, gameIds: ['recorded-game'] };
-    vi.mocked(getDoc).mockResolvedValue({
+    batch.get.mockResolvedValue({
       exists: () => true, data: () => ({ groups: [remote], boardMemberIds: ['past-board-member'] }),
     } as never);
 
@@ -72,7 +74,7 @@ describe('session persistence boundaries', () => {
   it('changes only games on the requested group and rejects a missing group', async () => {
     const selected = { id: 'selected', name: 'Current name', memberIds: ['member'], gameIds: ['old'] };
     const other = { id: 'other', memberIds: [], gameIds: ['keep'] };
-    vi.mocked(getDoc).mockResolvedValue({ exists: () => true, data: () => ({ groups: [selected, other] }) } as never);
+    batch.get.mockResolvedValue({ exists: () => true, data: () => ({ groups: [selected, other] }) } as never);
 
     await updateSessionGroupGames('session', 'selected', ['new']);
     expect(batch.update).toHaveBeenCalledWith(undefined, { groups: [{ ...selected, gameIds: ['new'] }, other] });
@@ -85,7 +87,7 @@ describe('session persistence boundaries', () => {
 it('preserves anonymous guests on game-only edits and includes guest changes in audit summaries', async () => {
   vi.clearAllMocks();
   const initial = { id: 'group', memberIds: ['member'], guestCount: 2, gameIds: [] };
-  vi.mocked(getDoc).mockResolvedValue({ exists: () => true, data: () => ({ name: '세션', groups: [initial] }) } as never);
+  batch.get.mockResolvedValue({ exists: () => true, data: () => ({ name: '세션', groups: [initial] }) } as never);
   await updateSessionGroupGames('session', 'group', ['new-game']);
   expect(batch.update).toHaveBeenCalledWith(undefined, { groups: [{ ...initial, gameIds: ['new-game'] }] });
   vi.clearAllMocks();

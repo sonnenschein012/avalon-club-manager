@@ -29,5 +29,5 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true
   },
-  "include": ["src", "tests", "scripts", "*.config.ts"]
+  "include": ["src", "exhibition", "exhibition-admin", "tests", "scripts", "*.config.ts"]
 }

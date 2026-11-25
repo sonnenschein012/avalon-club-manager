@@ -1,3 +1,4 @@
+import { requestExhibitionRefresh } from '../services/exhibitionRevision';
 import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   runTransaction,
@@ -350,6 +351,7 @@ export function useAttendanceLogic({ onMoveToRecord, draftScope }: UseAttendance
         });
       }
 
+      requestExhibitionRefresh(transaction);
       addAuditEventToTransaction(transaction, {
         category: 'session',
         action: planningSnapshot.exists() ? 'session.planning_overwritten' : 'session.meeting_started',

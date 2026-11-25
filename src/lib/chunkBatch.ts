@@ -1,4 +1,4 @@
-import { writeBatch, Firestore, DocumentReference, DocumentData } from 'firebase/firestore';
+import { writeBatch, Firestore, DocumentReference, DocumentData, type WriteBatch } from 'firebase/firestore';
 
 export async function commitBatchesInChunks(
   db: Firestore,
@@ -7,7 +7,8 @@ export async function commitBatchesInChunks(
     ref: DocumentReference;
     data?: DocumentData;
   }>,
-  chunkSize: number = 400
+  chunkSize: number = 400,
+  beforeCommit?: (batch: WriteBatch) => void,
 ) {
   for (let i = 0; i < operations.length; i += chunkSize) {
     const chunk = operations.slice(i, i + chunkSize);
@@ -23,6 +24,7 @@ export async function commitBatchesInChunks(
       }
     }
     
+    beforeCommit?.(batch);
     await batch.commit();
   }
 }

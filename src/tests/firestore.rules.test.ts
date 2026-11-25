@@ -1,8 +1,10 @@
-import { describe, it, beforeAll, afterAll, beforeEach } from 'vitest';
+import { createExhibitionReader } from '../../exhibition/reader';
+import { describe, it, beforeAll, afterAll, beforeEach, expect, vi } from 'vitest';
 import * as fs from 'fs';
-import { initializeTestEnvironment, RulesTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
+import { initializeTestEnvironment, RulesTestEnvironment, type RulesTestContext, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import {
   collection,
+  Timestamp,
   deleteDoc,
   doc,
   getDoc,
@@ -14,6 +16,21 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
+
+import { loadExhibitionSettings, loadExhibitionStatus, refreshExhibitions, retryExhibitionRefresh, saveExhibitionSettings } from '../services/exhibitionSyncService';
+import { importSessionRecords, updateSessionGroupGames, deleteSessionRecord } from '../services/sessionsService';
+import { requestExhibitionRefresh } from '../services/exhibitionRevision';
+import { exhibitionNameKey } from '../domain/exhibition/collection';
+
+const sync = vi.hoisted(() => ({ db: undefined as ReturnType<RulesTestContext['firestore']> | undefined, beforeBuild: undefined as (() => Promise<void>) | undefined }));
+vi.mock('../lib/firebase', () => ({ get db() { return sync.db; }, auth: { currentUser: { email: 'regular@example.com' } } }));
+vi.mock('../domain/exhibition/collection', async importOriginal => {
+  const actual = await importOriginal<typeof import('../domain/exhibition/collection')>();
+  return { ...actual, buildExhibitionCollection: async (...args: Parameters<typeof actual.buildExhibitionCollection>) => {
+    await sync.beforeBuild?.();
+    return actual.buildExhibitionCollection(...args);
+  } };
+});
 
 let testEnv: RulesTestEnvironment | undefined;
 
@@ -174,6 +191,161 @@ describe('Firestore Security Rules', () => {
     await assertFails(getDocs(collection(unauthedDb, 'interviewRounds')));
     await assertFails(setDoc(doc(unauthedDb, 'interviewNotes', 'note-1'), { generalNotes: 'test' }));
   });
+
+  it('allows only exact reads of the active exhibition generation without login', async () => {
+    if (!testEnv) throw new Error('testEnv not initialized');
+    await seedRegularAdmin();
+    const admin = testEnv.authenticatedContext('exhibition-admin', { email: REGULAR_ADMIN_EMAIL }).firestore();
+    const visitor = testEnv.unauthenticatedContext().firestore();
+    const root = 'exhibitionAccess/season';
+    const active = `${root}/generations/active`;
+    const staged = `${root}/generations/staged`;
+
+    await assertSucceeds(setDoc(doc(admin, root), { enabled: true, generationId: 'active' }));
+    await assertSucceeds(setDoc(doc(admin, `${active}/names/name-key`), { candidates: [{ profileId: 'profile-id' }] }));
+    await assertSucceeds(setDoc(doc(admin, `${active}/profiles/profile-id`), { name: '합성 부원', days: [] }));
+    await assertSucceeds(setDoc(doc(admin, `${staged}/profiles/profile-id`), { name: '변경 부원', days: [] }));
+    await assertSucceeds(getDoc(doc(visitor, root)));
+    await assertSucceeds(getDoc(doc(visitor, `${active}/names/name-key`)));
+    const missing = await assertSucceeds(getDoc(doc(visitor, `${active}/names/unknown`)));
+    if (missing.exists()) throw new Error('Unexpected lookup result');
+    await assertSucceeds(getDoc(doc(visitor, `${active}/profiles/profile-id`)));
+    await assertFails(getDoc(doc(visitor, `${staged}/profiles/profile-id`)));
+    await assertFails(getDocs(collection(visitor, 'exhibitionAccess')));
+    await assertFails(getDocs(collection(visitor, `${active}/names`)));
+    await assertFails(getDocs(collection(visitor, `${active}/profiles`)));
+    await assertFails(getDoc(doc(visitor, 'members/member-id')));
+    await assertFails(getDoc(doc(visitor, 'sessions/session-id')));
+    await assertFails(updateDoc(doc(visitor, root), { generationId: 'staged' }));
+    await assertFails(setDoc(doc(admin, `${active}/profiles/wrong`), { name: '합성', days: [], phone: 'private' }));
+    await assertSucceeds(updateDoc(doc(admin, root), { generationId: 'staged' }));
+    await assertFails(getDoc(doc(visitor, `${active}/profiles/profile-id`)));
+    await assertSucceeds(getDoc(doc(visitor, `${staged}/profiles/profile-id`)));
+    await assertSucceeds(updateDoc(doc(admin, root), { enabled: false }));
+    await assertFails(getDoc(doc(visitor, root)));
+    await assertFails(getDoc(doc(visitor, `${staged}/profiles/profile-id`)));
+    await testEnv.withSecurityRulesDisabled(async context => {
+      await deleteDoc(doc(context.firestore(), 'admins', REGULAR_ADMIN_EMAIL));
+    });
+    await assertFails(updateDoc(doc(admin, root), { enabled: true }));
+  });
+
+  it('resumes durable exhibition updates and rejects an obsolete calculation', async () => {
+    if (!testEnv) throw new Error('testEnv not initialized');
+    await seedRegularAdmin();
+    const operator = testEnv.authenticatedContext('sync-admin', { email: REGULAR_ADMIN_EMAIL }).firestore();
+    const visitor = testEnv.unauthenticatedContext().firestore();
+    sync.db = operator;
+    await testEnv.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'members/a'), { name: '합성 부원', studentId: '26' });
+    });
+    await saveExhibitionSettings('season', { enabled: true, period: { kind: 'all' },
+      gameMapping: [{ sourceId: 'game', pinId: 'pin' }] });
+    const batch = writeBatch(operator);
+    batch.set(doc(operator, 'sessions/first'), { name: '합성', date: Timestamp.fromDate(new Date('2026-09-01')),
+      groups: [{ id: 'group', memberIds: ['a'], gameIds: ['game'] }] });
+    requestExhibitionRefresh(batch);
+    await batch.commit();
+
+    const access = 'exhibitionAccess/season';
+    await assertFails(getDoc(doc(visitor, access)));
+    expect(await refreshExhibitions()).toBe(true);
+    const initial = (await getDoc(doc(visitor, access))).data()?.generationId;
+    const nameKey = await exhibitionNameKey('합성 부원');
+    expect((await getDoc(doc(visitor, `${access}/generations/${initial}/names/${nameKey}`))).exists()).toBe(true);
+
+    await saveExhibitionSettings('season', { enabled: true, period: { kind: 'all' }, gameMapping: [] });
+    let releaseBuild!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    const hold = new Promise<void>(resolve => { releaseBuild = resolve; });
+    sync.beforeBuild = () => { markStarted(); return hold; };
+    const obsolete = refreshExhibitions();
+    try {
+      await started;
+      const remove = writeBatch(operator);
+      remove.delete(doc(operator, 'sessions/first'));
+      requestExhibitionRefresh(remove);
+      await remove.commit();
+      sync.beforeBuild = undefined;
+      expect(await refreshExhibitions()).toBe(true);
+    } finally {
+      sync.beforeBuild = undefined;
+      releaseBuild();
+    }
+    expect(await obsolete).toBe(false);
+    const latest = (await getDoc(doc(visitor, access))).data()?.generationId;
+    expect(latest).not.toBe(initial);
+    await assertFails(getDoc(doc(visitor, `${access}/generations/${initial}/names/${nameKey}`)));
+    expect((await getDoc(doc(visitor, `${access}/generations/${latest}/names/${nameKey}`))).exists()).toBe(false);
+    expect(await refreshExhibitions()).toBe(true);
+    expect((await getDoc(doc(visitor, access))).data()?.generationId).toBe(latest);
+  }, 15_000);
+
+  it('projects live operation writes through the same reader used by the public exhibition', async () => {
+    if (!testEnv) throw new Error('testEnv not initialized');
+    await seedRegularAdmin();
+    const operator = testEnv.authenticatedContext('integration-admin', { email: REGULAR_ADMIN_EMAIL }).firestore();
+    sync.db = operator;
+    const visitor = testEnv.unauthenticatedContext().firestore();
+    // Rules testing provides a compat instance, which the modular SDK unwraps.
+    const publicReader = createExhibitionReader(visitor as unknown as import('firebase/firestore').Firestore, 'avalon');
+    await testEnv.withSecurityRulesDisabled(async context => {
+      const local = context.firestore();
+      await setDoc(doc(local, 'members/a'), { name: '합성 가람', studentId: '26', phone: 'private' });
+      await setDoc(doc(local, 'members/b'), { name: '합성 나래', studentId: '25' });
+      await setDoc(doc(local, 'sessions/legacy'), { name: '이전 형식', date: '2026-09-01',
+        groups: [{ id: 'old-group', memberIds: ['a'], gameIds: ['dixit'] }] });
+    });
+    await saveExhibitionSettings('avalon', { enabled: true, period: { kind: 'all' },
+      gameMapping: ['avalon', 'coffee', 'dixit'].map(id => ({ sourceId: id, pinId: id })),
+      descriptions: { avalon: '전시 담당 설명' } });
+    expect((await loadExhibitionSettings('avalon'))?.descriptions).toEqual({ avalon: '전시 담당 설명' });
+    await assertFails(getDoc(doc(visitor, 'exhibitionSettings/avalon')));
+    await assertFails(updateDoc(doc(visitor, 'exhibitionSettings/avalon'), { enabled: false }));
+    await importSessionRecords([{ id: 'meeting', name: '합성 모임', date: '2026-09-02',
+      groups: [{ id: 'new-group', memberIds: ['a', 'b'], gameIds: ['avalon'] }] }]);
+    expect(await refreshExhibitions()).toBe(true);
+    const matches = await publicReader.findExhibitionMembers(' 합성 가람 ');
+    const id = matches[0]!.profileId;
+    expect((await publicReader.loadExhibitionView(id)).descriptions).toEqual({ avalon: '전시 담당 설명' });
+    expect((await loadExhibitionStatus('avalon')).pending).toBe(false);
+    await retryExhibitionRefresh();
+    expect((await loadExhibitionStatus('avalon')).pending).toBe(true);
+    let profile = await publicReader.loadExhibitionProfile(id);
+    expect(profile?.days.map(day => day.gameIds)).toEqual([['avalon'], ['dixit']]);
+    expect(profile?.days[0]?.companions[0]).toMatchObject({ name: '합성 나래', gameIds: ['avalon'] });
+    expect(profile).not.toHaveProperty('phone');
+
+    await updateSessionGroupGames('meeting', 'new-group', ['coffee']);
+    await refreshExhibitions();
+    profile = await publicReader.loadExhibitionProfile(id);
+    expect(profile?.days[0]?.companions[0]?.gameIds).toEqual(['coffee']);
+    await deleteSessionRecord('meeting');
+    await refreshExhibitions();
+    expect(await publicReader.findExhibitionMembers('합성 나래')).toEqual([]);
+    expect((await publicReader.loadExhibitionProfile(id))?.days.map(day => day.gameIds)).toEqual([['dixit']]);
+    await saveExhibitionSettings('avalon', { enabled: false, period: { kind: 'all' }, gameMapping: [] });
+    await expect(publicReader.loadExhibitionProfile(id)).rejects.toThrow('현재 열 수 있는 전시가 없습니다');
+  }, 20_000);
+
+  it('keeps a 400-record import and exhibition invalidation atomic', async () => {
+    if (!testEnv) throw new Error('testEnv not initialized');
+    await seedRegularAdmin();
+    const operator = testEnv.authenticatedContext('import-admin', { email: REGULAR_ADMIN_EMAIL }).firestore();
+    sync.db = operator;
+    const records = Array.from({ length: 400 }, (_, index) => ({
+      id: `import-${index}`, date: '2026-09-01', name: '합성', groups: [],
+    }));
+    await importSessionRecords(records);
+    expect((await getDocs(collection(operator, 'sessions'))).size).toBe(400);
+    const revision = doc(operator, 'exhibitionSync/source');
+    expect((await getDoc(revision)).data()?.revision).toBe(1);
+    const extra = { ...records[0]!, id: 'not-written' };
+    await expect(importSessionRecords([extra, records[0]!])).rejects.toThrow('이미 존재하는 세션 ID');
+    expect((await getDoc(doc(operator, 'sessions/not-written'))).exists()).toBe(false);
+    expect((await getDoc(revision)).data()?.revision).toBe(1);
+  }, 20_000);
 
   it('rejects malformed core records while allowing incremental legacy repairs', async () => {
     if (!testEnv) throw new Error('testEnv not initialized');

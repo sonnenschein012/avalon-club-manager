@@ -1,3 +1,4 @@
+import { requestExhibitionRefresh } from './exhibitionRevision';
 import { collection, doc, getDocs, runTransaction, serverTimestamp, type DocumentData, type Transaction } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import type { DailyPlanning } from '../domain/attendance/dailyPlanning';
@@ -101,6 +102,7 @@ export async function renameDailyPlanningGroup(planningId: string, groupId: stri
       groups: planning.groups.map(group => group.id === groupId ? { ...group, name } : group),
     });
     if (sessionRef && sessionSnapshot) {
+      requestExhibitionRefresh(transaction);
       const session = sessionSnapshot.data() as Session;
       transaction.update(sessionRef, {
         groups: session.groups.map(group => group.id === groupId ? { ...group, name } : group),

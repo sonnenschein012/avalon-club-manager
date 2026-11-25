@@ -1,3 +1,4 @@
+import { watchExhibitionSync, type ExhibitionSyncStatus } from './services/exhibitionSyncService';
 import React, { Component, useState, useEffect } from 'react';
 import { auth, signInWithGoogle, logout, checkAdminStatus, initializeDemoSession, isDemoMode } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
@@ -86,6 +87,14 @@ export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const isPublicInterviewRoute = location.pathname.startsWith('/interview/');
+  const [exhibitionSync, setExhibitionSync] = useState<ExhibitionSyncStatus>('idle');
+  const operatorId = isAdmin && !isPublicInterviewRoute ? user?.uid : undefined;
+
+  useEffect(() => {
+    if (!operatorId) return;
+    return watchExhibitionSync(setExhibitionSync);
+  }, [operatorId]);
+
 
   const handleLogin = async () => {
     if (loggingIn) return;
@@ -255,6 +264,11 @@ export default function App() {
   return (
     <>
       <Toaster position="bottom-right" />
+      {operatorId && exhibitionSync === 'pending' && (
+        <p role="status" className="border-b px-4 py-2 text-sm">
+          전시 반영 대기 중입니다. 운영 기록은 기존 앱에서 확인할 수 있습니다.
+        </p>
+      )}
       <React.Suspense fallback={<RouteLoadingFallback />}>
       <Routes>
       <Route path="/" element={

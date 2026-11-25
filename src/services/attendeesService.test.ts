@@ -22,6 +22,7 @@ vi.mock('../lib/firebase', () => ({
 }));
 
 vi.mock('firebase/firestore', () => ({
+  increment: () => 'increment',
   collection: vi.fn(),
   doc: vi.fn(() => ({ id: 'new-document' })),
   getDocs: vi.fn(async () => ({ docs: [] })),

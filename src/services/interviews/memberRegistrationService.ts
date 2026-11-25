@@ -1,3 +1,4 @@
+import { requestExhibitionRefresh } from '../exhibitionRevision';
 import {
   collection,
   doc,
@@ -71,6 +72,7 @@ export async function createMemberFromSelectedApplicant(
       memberRegisteredBy: actorEmail(),
       updatedAt: serverTimestamp(),
     });
+    requestExhibitionRefresh(transaction);
     addAuditEventToTransaction(transaction, {
       category: 'member',
       action: 'member.created_from_applicant',
