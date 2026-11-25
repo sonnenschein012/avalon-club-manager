@@ -12,7 +12,9 @@ vi.mock('../../exhibition/data', () => ({
 }));
 
 const click = (selector: string) => document.querySelector<HTMLElement>(selector)?.click();
-const pins = () => [...document.querySelectorAll<HTMLElement>('.works [data-pin]')].map(pin => pin.dataset.pin);
+const pins = () => [...document.querySelectorAll<HTMLElement>('.works [data-pin]')]
+  .sort((a, b) => parseFloat(b.style.getPropertyValue('--size')) - parseFloat(a.style.getPropertyValue('--size')))
+  .map(pin => pin.dataset.pin);
 const submitName = (value: string) => {
   document.querySelector<HTMLInputElement>('#member-name')!.value = value;
   document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -37,17 +39,19 @@ describe('public exhibition view', () => {
   it('opens a name match, filters same-group games and returns focus from a pin', async () => {
     api.find.mockResolvedValue([{ profileId }]);
     api.load.mockResolvedValue({ name: '합성 가람', days: [
-      { date: '2026-09-02', gameIds: ['avalon', 'dixit'],
+      { date: '2026-09-02', gameIds: ['avalon', 'dixit'], gameCounts: { avalon: 2, dixit: 1 },
         companions: [{ profileId: companionId, name: '합성 한결', gameIds: ['avalon'] },
           { profileId: otherId, name: '합성 다온', gameIds: ['dixit'] }] },
-      { date: '2026-09-01', gameIds: ['coffee'],
+      { date: '2026-09-01', gameIds: ['coffee'], gameCounts: { coffee: 3 },
         companions: [{ profileId: companionId, name: '합성 한결', gameIds: ['coffee'] }] },
     ] });
     submitName('합성 가람');
-    await vi.waitFor(() => expect(pins()).toEqual(['avalon', 'coffee', 'dixit']));
+    await vi.waitFor(() => expect(pins()).toEqual(['coffee', 'avalon', 'dixit']));
 
+    click('.archive-date[href*="2026-09-02"]');
+    expect(pins()).toEqual(['avalon', 'dixit']);
     click(`.archive-people a[href$="/${companionId}"]`);
-    expect(pins()).toEqual(['avalon', 'coffee']);
+    expect(pins()).toEqual(['coffee', 'avalon']);
     expect(document.querySelector('.companion-filter')?.textContent).toContain('합성 한결');
     click('.archive-date[href*="2026-09-02"]');
     expect(pins()).toEqual(['avalon']);

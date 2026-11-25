@@ -128,3 +128,5 @@ Graphify의 검증된 `graphify-out/` 허용 목록만 Git에 공유하며 설�
 부원용 화면은 `exhibition/`의 별도 Vite 진입점에서 빌드합니다. `npm run exhibition:dev`는 로컬 Firestore Emulator(127.0.0.1:8080)의 전시 데이터만 조회합니다. 전시 ID 기본값은 `avalon`이며 필요 시 `VITE_EXHIBITION_ID`로 지정합니다. `npm run exhibition:build`는 `exhibition/dist/`에 운영 연결용 정적 파일을 생성하고, `npm run exhibition:build -- --mode staging`은 staging 연결용 파일을 같은 위치에 생성합니다. 기존 운영 앱 빌드와 배포 디렉터리는 별개입니다. 핀·글꼴·배경은 원본 HTML에서 바이트 그대로 추출했으며 이름 조회와 개인 기록은 Firestore에서 읽습니다.
 
 전시 관리자 화면은 `exhibition-admin/`에 있습니다. `npm run exhibition:admin:dev`는 기존 운영 앱의 로컬 Auth·Firestore Emulator를 사용하고, `npm run exhibition:admin:build`는 `exhibition-admin/dist/`로 별도 빌드합니다. Firebase에 등록된 기존 관리자 계정으로 전시 ID를 열어 기간, 공개 상태, 게임 매핑과 설명을 저장하고 갱신 상태를 확인할 수 있습니다.
+
+게임 순위는 개인 전체 기록의 조별 플레이 횟수와 최근 플레이일로 한 번 계산합니다. 날짜와 동료 필터는 같은 순위를 유지하며 해당 게임만 보여 줍니다. 동료 목록은 함께한 조 수, 최근 날짜, 서로 다른 공동 게임 수, 가나다순으로 정렬합니다. 과거 전시 데이터는 관리자 화면의 다시 반영을 실행하면 조별 집계로 갱신됩니다.

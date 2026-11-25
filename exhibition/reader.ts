@@ -16,7 +16,7 @@ export function createExhibitionReader(db: Firestore, exhibitionId: string) {
     } catch (error) {
       if ((error as { code?: string }).code !== 'permission-denied') throw error;
     }
-    throw new ExhibitionUnavailable('현재 열 수 있는 전시가 없습니다.');
+    throw new ExhibitionUnavailable('현재 볼 수 있는 기록이 없습니다.');
   }
 
   async function readActive<T>(kind: 'names' | 'profiles', id: string) {

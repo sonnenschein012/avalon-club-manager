@@ -1,6 +1,6 @@
 :root{color-scheme:light;--paper:#fafaf8;--ink:#292622;--muted:#67625d;--line:#e2dfd8;--raspberry:#6f5e68;--felt:#52354b;--secondary:#544c4f;--serif:"Fraunces Embedded","Times New Roman",Georgia,serif;--korean:"Maru Buri Embedded","AppleMyungjo","Batang",serif;--min:var(--korean);--gutter:clamp(22px,4.45vw,82px)}
 *{box-sizing:border-box}
-html{min-width:280px;scrollbar-gutter:stable}
+html{min-width:280px;scrollbar-gutter:stable;overscroll-behavior-y:none}
 body{margin:0;background-color:var(--paper);background-image:url("./assets/textures/paper.png"),linear-gradient(rgba(255,255,255,.42),rgba(255,255,255,.42));background-repeat:repeat,no-repeat;background-size:220px 220px,auto;background-attachment:fixed,fixed;color:var(--ink);font-family:var(--korean);font-size:16px;line-height:1.55;-webkit-tap-highlight-color:transparent}
 body.dialog-open{overflow:hidden}
 button,a{touch-action:manipulation}
@@ -252,7 +252,7 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:-1;ba
 /* Revision 05: continuous fine-knit textile, irregular mobile composition */
 :root{--cloth:url("./assets/textures/cloth.webp");--paper:#f9f9f8}
 html{background-color:var(--paper);background-image:var(--cloth);background-repeat:repeat;background-size:350px 350px;background-position:0 0}
-body{background:transparent!important;min-height:100vh}
+body{background:transparent!important;min-height:100vh;overscroll-behavior-y:none}
 body::before{display:none!important}
 .modal{background-color:var(--paper);background-image:var(--cloth);background-size:350px 350px}
 .pin-field{background:transparent;color:var(--ink)}
@@ -374,14 +374,14 @@ html:has(.entry){scrollbar-gutter:auto}
 .entry-edition{margin:0 0 4px;letter-spacing:.14em}
 .name-form{display:flex;flex-direction:column;align-items:center;text-align:center}
 .name-input-row{position:relative;display:block;width:min(100%,272px);margin:22px auto 0;border-bottom:1px solid #8a8581}
-.name-input-row input{display:block;width:100%;min-height:44px;padding:13px 40px 7px 40px;text-align:center;font:400 15px/1.45 var(--korean);letter-spacing:-.01em}
+.name-input-row input{display:block;width:100%;min-height:44px;padding:13px 40px 7px 40px;text-align:center;font:400 16px/1.45 var(--korean);letter-spacing:-.01em}
 .name-input-row input::placeholder{color:#746e68;opacity:1}
 .name-input-row .entry-submit{position:absolute;right:2px;top:50%;transform:translateY(-52%);width:30px;min-width:30px;min-height:30px;display:grid;place-items:center;padding:0;color:#6a645f}
 .name-input-row .entry-submit span{display:block;font:400 18px/1 var(--serif);transform:translateY(-1px)}
 #entry-error{margin:10px 0 0;text-align:center}
 #name-matches{margin-top:8px}
 @media(hover:hover){.name-input-row .entry-submit:hover{color:var(--ink)}}
-@media(max-width:760px){.entry{padding:28px 0 12vh}.entry-title{margin-bottom:15px}.entry-edition{margin-bottom:3px}.name-input-row{width:min(100%,258px);margin-top:20px}.name-input-row input{font-size:14.5px;padding:12px 36px 7px}.name-input-row .entry-submit{right:1px;width:28px;min-width:28px}.name-input-row .entry-submit span{font-size:17px}}
+@media(max-width:760px){.entry{padding:28px 0 12vh}.entry-title{margin-bottom:15px}.entry-edition{margin-bottom:3px}.name-input-row{width:min(100%,258px);margin-top:20px}.name-input-row input{font-size:16px;padding:12px 36px 7px}.name-input-row .entry-submit{right:1px;width:28px;min-width:28px}.name-input-row .entry-submit span{font-size:17px}}
 
 
 /* 19 — entry: lower the input group further, lengthen the arrow shaft */
@@ -406,7 +406,7 @@ html,.modal{
 /* 21 — Original knit photograph, color-balanced in CSS; 37 px yarn repeat at 1000 px source maps to ~8.7 CSS px. */
 :root{--photo-knit:url("./assets/textures/knit.svg")}
 html,.modal{
- background-color:#fff;
+ background-color:var(--paper);
  background-image:linear-gradient(rgba(255,254,252,.83),rgba(255,254,252,.83)),var(--photo-knit);
  background-size:auto,222px 222px;
  background-position:0 0,0 0;
@@ -417,3 +417,35 @@ html,.modal{
 .archive-people a:hover,.archive-people a:focus-visible,.archive-people a[aria-current]{text-decoration-color:currentColor}
 .companion-filter{margin:0 auto 10px;text-align:center;font:400 15px/1.8 var(--korean)}
 .companion-filter a{margin-left:10px}
+
+/* Pins sit in staggered clusters instead of reserving uniform rows. */
+.scatter-field.ranked-layout {
+  --pin-scale: 1;
+  min-height: max(54px, var(--canvas-0));
+  max-width: 1110px;
+  margin-inline: auto;
+}
+.scatter-field.ranked-layout .scatter-pin {
+  left: var(--pin-x-0);
+  top: var(--pin-y-0);
+  transform: translate(-50%, -50%);
+  width: calc(var(--size) * var(--pin-scale));
+  height: calc(var(--size) * var(--pin-scale));
+  max-width: none;
+}
+.scatter-field.ranked-layout .scatter-pin img {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+}
+.scatter-field.ranked-layout .blank { margin: 0; padding-block: 16px; }
+@media (max-width: 980px) {
+  .scatter-field.ranked-layout { --pin-scale: .82; min-height: max(54px, var(--canvas-1)); }
+  .scatter-field.ranked-layout .scatter-pin { left: var(--pin-x-1); top: var(--pin-y-1); }
+}
+@media (max-width: 620px) {
+  .scatter-field.ranked-layout { --pin-scale: .64; min-height: max(54px, var(--canvas-2)); }
+  .scatter-field.ranked-layout .scatter-pin { left: var(--pin-x-2); top: var(--pin-y-2); }
+}

@@ -13,5 +13,5 @@ const exhibitionId = import.meta.env.VITE_EXHIBITION_ID || 'avalon';
 export const { findExhibitionMembers, loadExhibitionView } = createExhibitionReader(db, exhibitionId);
 
 export function exhibitionErrorMessage(error: unknown) {
-  return error instanceof ExhibitionUnavailable ? error.message : '전시 기록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+  return error instanceof ExhibitionUnavailable ? error.message : '기록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
 }

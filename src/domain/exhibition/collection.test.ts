@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Timestamp } from 'firebase/firestore';
-import { buildExhibitionCollection, exhibitionGames, exhibitionNameKey } from './collection';
+import { buildExhibitionCollection, exhibitionGames, exhibitionNameKey, rankedGames, rankedCompanions } from './collection';
 import type { Session } from '../../types';
 
 const members = [
@@ -82,4 +82,19 @@ describe('exhibition collection', () => {
     const { profileId } = candidate;
     expect(exhibitionGames(result.profiles.get(profileId)!)).toEqual(new Map([['pin-x', ['2027-02-28']]]));
   });
+});
+
+it('counts each pin per group and ranks shared groups across sessions', async () => {
+  const records = [
+    session('alpha', '2026-09-02T05:00:00Z', [[['a', 'b'], ['x', 'alias-x']], [['a', 'c'], ['y']]]),
+    session('beta', '2026-09-02T06:00:00Z', [[['a', 'b'], ['x']]]),
+  ];
+  const result = await buildExhibitionCollection('first', { kind: 'all' }, records, members, mapping);
+  const key = await nameKey('가람');
+  const id = result.names.get(key)?.candidates[0]?.profileId;
+  if (!id) throw new Error('Expected profile');
+  const profile = result.profiles.get(id)!;
+  expect(profile.days[0]?.gameCounts).toEqual({ 'pin-x': 2, 'pin-y': 1 });
+  expect(rankedGames(profile.days, new Map())).toEqual(['pin-x', 'pin-y']);
+  expect(rankedCompanions(profile.days).map(person => person.count)).toEqual([2, 1]);
 });

@@ -330,7 +330,7 @@ describe('Firestore Security Rules', () => {
     expect(await publicReader.findExhibitionMembers('합성 나래')).toEqual([]);
     expect((await publicReader.loadExhibitionProfile(id))?.days.map(day => day.gameIds)).toEqual([['dixit']]);
     await saveExhibitionSettings('avalon', { enabled: false, period: { kind: 'all' }, gameMapping: [] });
-    await expect(publicReader.loadExhibitionProfile(id)).rejects.toThrow('현재 열 수 있는 전시가 없습니다');
+    await expect(publicReader.loadExhibitionProfile(id)).rejects.toThrow('현재 볼 수 있는 기록이 없습니다');
   }, 20_000);
 
   it('keeps a 400-record import and exhibition invalidation atomic', async () => {
