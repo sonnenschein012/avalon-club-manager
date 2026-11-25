@@ -296,7 +296,8 @@ body::before{display:none!important}
 .archive-date[aria-current]{color:var(--ink)}
 .archive-date[aria-current]::after{content:"";height:1.5px;position:absolute;bottom:4px;left:4px;right:4px;background:var(--raspberry)}
 .archive-date:hover{color:var(--ink)}
-.archive-people{margin:18px auto 0;max-width:640px;min-height:38px;color:var(--ink);font:400 15px/1.9 var(--korean)}
+.archive-people{--archive-people-gap:18px;margin:var(--archive-people-gap) auto 0;max-width:640px;min-height:38px;color:var(--ink);font:400 15px/1.9 var(--korean)}
+.archive-people-before-dates{margin-block:0 var(--archive-people-gap)}
 .archive-people-label{display:block;color:var(--muted);font-size:12px;margin-bottom:3px}
 .archive-people ul{padding:0;margin:0;display:flex;justify-content:center;flex-wrap:wrap;gap:0 12px;list-style:none}
 .archive-people li+li::before{content:"·";margin-right:12px;color:var(--muted)}
@@ -304,7 +305,7 @@ body::before{display:none!important}
 .scatter-field.session-filter .scatter-pin:nth-child(3n+1){margin-top:0}
 .scatter-field.session-filter .scatter-pin:nth-child(3n+2){margin-top:38px}
 .scatter-field.session-filter .scatter-pin:nth-child(3n){margin-top:4px}
-@media(max-width:760px){.session-archive{margin-top:20px;padding-top:16px}.archive-dates{gap:3px 11px}.archive-date{font-size:19px;min-height:44px;padding:5px 3px}.archive-people{font-size:14px;margin-top:13px}.archive-people ul{gap:0 8px}.archive-people li+li::before{margin-right:8px}.scatter-field.session-filter{padding:22px 2% 42px;min-height:200px;gap:21px 26px}.scatter-field.session-filter .scatter-pin:nth-child(3n+2){margin-top:27px}}
+@media(max-width:760px){.session-archive{margin-top:20px;padding-top:16px}.archive-dates{gap:3px 11px}.archive-date{font-size:19px;min-height:44px;padding:5px 3px}.archive-people{--archive-people-gap:13px;font-size:14px}.archive-people ul{gap:0 8px}.archive-people li+li::before{margin-right:8px}.scatter-field.session-filter{padding:22px 2% 42px;min-height:200px;gap:21px 26px}.scatter-field.session-filter .scatter-pin:nth-child(3n+2){margin-top:27px}}
 @media(max-width:350px){.archive-dates{gap:3px 8px}.archive-date{font-size:18px}.scatter-field.session-filter{gap:20px 16px}}
 
 

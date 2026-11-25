@@ -48,8 +48,14 @@ describe('public exhibition view', () => {
     submitName('합성 가람');
     await vi.waitFor(() => expect(pins()).toEqual(['coffee', 'avalon', 'dixit']));
 
+    const archiveOrder = () => [...document.querySelectorAll('.session-archive > *')]
+      .map(element => element.classList[0]);
+    expect(archiveOrder()).toEqual(['archive-heading', 'archive-dates', 'archive-people']);
+
     click('.archive-date[href*="2026-09-02"]');
     expect(pins()).toEqual(['avalon', 'dixit']);
+    expect(archiveOrder()).toEqual(['archive-people', 'archive-heading', 'archive-dates']);
+    expect(document.querySelector('.archive-people-label')?.textContent).toBe('같은 조에 있었던 사람');
     click(`.archive-people a[href$="/${companionId}"]`);
     expect(pins()).toEqual(['coffee', 'avalon']);
     expect(document.querySelector('.companion-filter')?.textContent).toContain('합성 한결');

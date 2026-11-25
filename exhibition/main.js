@@ -94,9 +94,15 @@ function archive(state) {
     const active = person.profileId === companionId ? 'aria-current="true"' : '';
     return `<li><a href="${formPath(id, '', person.profileId)}" ${active}>${esc(person.name)}</a></li>`;
   }).join('');
-  return '<section class="session-archive" aria-label="세션 기록"><h2 class="archive-heading">함께한 날</h2>'+
-    '<nav class="archive-dates" aria-label="모임 날짜">'+all+datesHtml+'</nav>'+
-    (people ? '<div class="archive-people"><span class="archive-people-label">'+(date?'같은 조에 있었던 사람':'함께 플레이한 사람')+'</span><ul>'+people+'</ul></div>' : '')+'</section>';
+  const peopleLabel = date ? '같은 조에 있었던 사람' : '함께 플레이한 사람';
+  const peopleClass = date ? 'archive-people archive-people-before-dates' : 'archive-people';
+  const peopleSection = people
+    ? `<div class="${peopleClass}"><span class="archive-people-label">${peopleLabel}</span><ul>${people}</ul></div>`
+    : '';
+  const datesSection = '<h2 class="archive-heading">함께한 날</h2>'+
+    '<nav class="archive-dates" aria-label="모임 날짜">'+all+datesHtml+'</nav>';
+  return '<section class="session-archive" aria-label="세션 기록">'+
+    (date ? peopleSection+datesSection : datesSection+peopleSection)+'</section>';
 }
 
 function collection(state) {
