@@ -1,5 +1,5 @@
 import {
-  collection, doc, getDocFromServer, getDocsFromServer, onSnapshot, runTransaction, writeBatch, type DocumentReference,
+  collection, doc, getDocFromServer, getDocsFromServer, limit, onSnapshot, query, where, runTransaction, writeBatch, type DocumentData, type DocumentReference,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { commitBatchesInChunks } from '../lib/chunkBatch';
@@ -48,6 +48,30 @@ export async function saveExhibitionSettings(exhibitionId: string, settings: Exh
   await batch.commit();
 }
 
+async function pruneSupersededGenerations(exhibitionIds: string[]) {
+  let complete = true;
+  for (const exhibitionId of exhibitionIds) {
+    const access = doc(db, 'exhibitionAccess', exhibitionId);
+    const current = (await getDocFromServer(access)).data();
+    if (!current?.enabled || !/^[1-9][0-9]*$/.test(current.generationId)) continue;
+
+    const obsolete = await getDocsFromServer(query(collection(access, 'generations'),
+      where('revision', '<', Number(current.generationId)), limit(3)));
+    for (const generation of obsolete.docs) {
+      const entries = await Promise.all(['names', 'profiles'].map(kind =>
+        getDocsFromServer(collection(generation.ref, kind))));
+      await commitBatchesInChunks(db, entries.flatMap(snapshot =>
+        snapshot.docs.map(item => ({ type: 'delete' as const, ref: item.ref }))));
+      // Retain the manifest until both child collections have been deleted.
+      const batch = writeBatch(db);
+      batch.delete(generation.ref);
+      await batch.commit();
+    }
+    if (obsolete.size === 3) complete = false;
+  }
+  return complete;
+}
+
 /** Process the latest durable revision. A disconnected or slower browser can safely retry. */
 export async function refreshExhibitions(): Promise<boolean> {
   const revisionRef = exhibitionRevisionRef();
@@ -55,12 +79,15 @@ export async function refreshExhibitions(): Promise<boolean> {
   const revision = Number(source.data()?.revision ?? 0);
   const progressRef = doc(db, 'exhibitionSync', 'progress');
   const progress = await getDocFromServer(progressRef);
-  if (!revision || Number(progress.data()?.revision ?? 0) >= revision) return true;
+  if (!revision) return true;
 
   const settings = await getDocsFromServer(collection(db, 'exhibitionSettings'));
   const active = settings.docs.filter(snapshot => (snapshot.data() as ExhibitionSettings).enabled);
+  const activeIds = active.map(snapshot => snapshot.id);
+  if (Number(progress.data()?.revision ?? 0) >= revision) return pruneSupersededGenerations(activeIds);
+
   const generationId = String(revision);
-  const operations: Parameters<typeof commitBatchesInChunks>[1] = [];
+  const operations: { ref: DocumentReference; data: DocumentData }[] = [];
   const changes: {
     access: DocumentReference;
     diagnostics: DocumentReference;
@@ -83,21 +110,29 @@ export async function refreshExhibitions(): Promise<boolean> {
       const result = await buildExhibitionCollection(snapshot.id, period, sessions, members,
         new Map(gameMapping.map(({ sourceId, pinId }) => [sourceId, pinId])));
       const access = doc(db, 'exhibitionAccess', snapshot.id);
+      operations.push({ ref: doc(access, 'generations', generationId), data: { revision } });
       for (const kind of ['names', 'profiles'] as const) {
         for (const [id, data] of result[kind]) {
-          operations.push({ type: 'set', ref: doc(access, 'generations', generationId, kind, id), data });
+          operations.push({ ref: doc(access, 'generations', generationId, kind, id), data });
         }
       }
       changes.push({ access, diagnostics: doc(db, 'exhibitionDiagnostics', snapshot.id),
         unmappedGameIds: result.unmappedGameIds, missingMemberIds: result.missingMemberIds, descriptions });
     }
   }
-  // Avoid staging a revision already known to have changed while reading inputs.
-  const latest = await getDocFromServer(revisionRef);
-  if (latest.data()?.revision !== revision) return false;
-  await commitBatchesInChunks(db, operations);
+  // Each chunk checks the revision in its transaction so a superseded worker
+  // cannot recreate children after another worker has retired its manifest.
+  for (let start = 0; start < operations.length; start += 400) {
+    const staged = await runTransaction(db, async transaction => {
+      const current = await transaction.get(revisionRef);
+      if (current.data()?.revision !== revision) return false;
+      for (const { ref, data } of operations.slice(start, start + 400)) transaction.set(ref, data);
+      return true;
+    });
+    if (!staged) return false;
+  }
 
-  return runTransaction(db, async transaction => {
+  const appliedRevision = await runTransaction(db, async transaction => {
     const [current, applied] = await Promise.all([transaction.get(revisionRef), transaction.get(progressRef)]);
     if (current.data()?.revision !== revision) return false;
     if (Number(applied.data()?.revision ?? 0) >= revision) return true;
@@ -108,6 +143,7 @@ export async function refreshExhibitions(): Promise<boolean> {
     transaction.set(progressRef, { revision });
     return true;
   });
+  return appliedRevision && pruneSupersededGenerations(activeIds);
 }
 
 export type ExhibitionSyncStatus = 'idle' | 'syncing' | 'pending';

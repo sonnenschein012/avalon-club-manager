@@ -277,6 +277,10 @@ describe('Firestore Security Rules', () => {
     const latest = (await getDoc(doc(visitor, access))).data()?.generationId;
     expect(latest).not.toBe(initial);
     await assertFails(getDoc(doc(visitor, `${access}/generations/${initial}/names/${nameKey}`)));
+    expect((await getDoc(doc(operator, `${access}/generations/${initial}`))).exists()).toBe(false);
+    expect((await getDocs(collection(operator, `${access}/generations/${initial}/profiles`))).empty).toBe(true);
+    await assertFails(deleteDoc(doc(operator, `${access}/generations/${latest}`)));
+    expect((await getDoc(doc(operator, `${access}/generations/${latest}`))).exists()).toBe(true);
     expect((await getDoc(doc(visitor, `${access}/generations/${latest}/names/${nameKey}`))).exists()).toBe(false);
     expect(await refreshExhibitions()).toBe(true);
     expect((await getDoc(doc(visitor, access))).data()?.generationId).toBe(latest);

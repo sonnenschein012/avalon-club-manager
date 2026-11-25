@@ -7,6 +7,12 @@
       "hosting": {
         "avalondgu-site": [
           "avalondgu"
+        ],
+        "avalon-exhibition": [
+          "avalon-collection"
+        ],
+        "avalon-exhibition-admin": [
+          "avalon-collection-admin"
         ]
       }
     }

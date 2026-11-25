@@ -422,10 +422,20 @@ service cloud.firestore {
         request.resource.data.get('descriptions', {}) is map;
     }
 
+    match /exhibitionAccess/{exhibitionId}/generations/{generationId} {
+      allow read: if isAdmin();
+      allow create, update: if isAdmin() &&
+        request.resource.data.keys().hasOnly(['revision']) &&
+        request.resource.data.revision is int && request.resource.data.revision > 0;
+      allow delete: if isAdmin() && !canReadExhibitionGeneration(exhibitionId, generationId);
+    }
+
     match /exhibitionAccess/{exhibitionId}/generations/{generationId}/{kind}/{entryId} {
       allow get: if kind in ['names', 'profiles'] &&
         (isAdmin() || canReadExhibitionGeneration(exhibitionId, generationId));
-      allow list, delete: if kind in ['names', 'profiles'] && isAdmin();
+      allow list: if kind in ['names', 'profiles'] && isAdmin();
+      allow delete: if kind in ['names', 'profiles'] && isAdmin() &&
+        !canReadExhibitionGeneration(exhibitionId, generationId);
       allow create, update: if isAdmin() && (
         (kind == 'names' && request.resource.data.keys().hasOnly(['candidates']) &&
           request.resource.data.candidates is list) ||

@@ -77,11 +77,37 @@ CI는 main push/PR에서 lint, 타입, 단위 테스트, 규칙 테스트, 운�
 
 ## 전시 운영 전환
 
-전시 공개 사이트는 `firebase.exhibition.json`의 Hosting target `avalon-exhibition`으로 분리합니다. 인증된 Firebase CLI에서 승인된 사이트 ID를 운영 프로젝트에 매핑한 뒤 이 설정의 해당 target만 배포합니다. 운영 앱의 `avalondgu-site`는 기존 설정에서 관리합니다. 관리 화면은 같은 설정의 `avalon-exhibition-admin` target으로 분리합니다. 두 target 모두 사이트 ID 매핑이 필요하며, Google 로그인에 사용하는 Firebase Auth 승인 도메인에 관리자 사이트를 등록합니다.
+전시 공개 사이트는 `firebase.exhibition.json`의 Hosting target `avalon-exhibition`으로 분리합니다. 운영 프로젝트의 매핑은 저장소의 `.firebaserc`에 정의되어 있습니다. Firebase에서 실제 사이트가 등록된 것을 확인한 뒤 해당 target만 배포합니다. 운영 앱의 `avalondgu-site`는 기존 설정에서 관리합니다. 관리 화면은 같은 설정의 `avalon-exhibition-admin` target으로 분리합니다. 두 사이트가 운영 프로젝트에 등록돼 있어야 하며, Google 로그인에 사용하는 Firebase Auth 승인 도메인에 관리자 사이트를 등록합니다.
 
 1. 합성 데이터로 세션 생성·수정·삭제, 이름 조회 및 동료별 게임을 검증합니다. 운영 연결 전에는 스테이징 빌드와 비로그인 접근을 확인합니다.
 2. Firebase 콘솔에서 기존 DB와 Spark 한도, 두 새 사이트의 실제 ID와 공유 Hosting 사용량을 확인합니다. 기존 프로젝트에서는 운영 앱과 전시가 한도를 공유합니다.
-3. 승인 후 Firestore 규칙을 운영 앱과 전시의 새 빌드보다 먼저 적용합니다. 새 버전의 운영 기록 저장에는 자동 갱신 문서 쓰기가 포함됩니다. 장애 시 전시 설정을 비공개로 저장하면 공개 조회가 차단됩니다. 전시 데이터 묶음은 교체될 때 이전 묶음의 공개 접근이 닫힙니다. 오래된 데이터의 자동 정리는 운영 전환 전에 별도로 준비합니다.
+3. 승인 후 Firestore 규칙을 운영 앱과 전시의 새 빌드보다 먼저 적용합니다. 새 버전의 운영 기록 저장에는 자동 갱신 문서 쓰기가 포함됩니다. 장애 시 전시 설정을 비공개로 저장하면 공개 조회가 차단됩니다. 전시 데이터 묶음은 교체될 때 이전 묶음의 공개 접근이 닫힙니다. 교체된 게시 묶음과 이전 계산이 남긴 묶음은 관리자가 접속한 동안 자동 정리합니다. 비공개 전환만으로는 현재 보존 중인 묶음을 삭제하지 않습니다.
 4. 실제 운영 데이터를 처음 반영하기 전에 전시 기간과 게임 매핑을 검토합니다. Firebase 콘솔에서 원본을 직접 수정했다면 관리자 화면에서 재반영을 요청합니다.
 
 공개 빌드의 압축 추정치는 JS/CSS 합계 약 100 KB이고, 핀은 평균 약 122 KB, 최대 약 1.33 MB입니다. 핀 12개를 평균 크기로 가정한 전송량은 약 1.47 MB이며 여기에는 글꼴·배경·Firestore 응답이 포함되지 않습니다. 실제 동시 방문 및 브라우저 캐시 적중률을 포함한 운영 사용량은 별도 확인이 필요합니다.
+
+### 운영 배포 명령
+
+Firebase CLI에 공동 운영 계정으로 로그인하고 프로젝트와 사이트 목록을 확인합니다. 사이트가 아직 없다면 승인한 ID로 생성합니다. 이미 해당 프로젝트에 있는 사이트는 기존 ID를 사용합니다. 여기의 두 이름은 운영진이 선택한 주소입니다.
+
+```bash
+npx firebase login
+npx firebase hosting:sites:list --project gen-lang-client-0205444206
+# 각 사이트가 아직 없을 때만 생성
+npx firebase hosting:sites:create avalon-collection --project gen-lang-client-0205444206
+npx firebase hosting:sites:create avalon-collection-admin --project gen-lang-client-0205444206
+```
+
+Firebase Console의 Authentication 승인 도메인에 `avalon-collection-admin.web.app`을 추가하고 프로젝트의 Spark 상태를 확인합니다. 저장소 루트에서 운영용 빌드를 만든 뒤 규칙, 기존 운영 앱, 두 전시 사이트 순서로 배포합니다.
+
+```bash
+npm ci
+npm run build
+npm run exhibition:build
+npm run exhibition:admin:build
+npx firebase deploy --project gen-lang-client-0205444206 --config firebase.json --only firestore
+npx firebase deploy --project gen-lang-client-0205444206 --config firebase.json --only hosting:avalondgu-site
+npx firebase deploy --project gen-lang-client-0205444206 --config firebase.exhibition.json --only hosting:avalon-exhibition,hosting:avalon-exhibition-admin
+```
+
+관리 사이트에서 전시 ID `avalon`을 열어 처음에는 비공개로 기간과 핀 매핑을 저장합니다. 브라우저에서 관리자 로그인과 기존 운영 앱을 확인한 뒤 전시를 공개합니다. 공개 후 대표 기록의 이름 조회, 날짜, 동료별 게임과 핀 설명을 확인합니다.
