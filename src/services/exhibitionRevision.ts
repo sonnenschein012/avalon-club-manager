@@ -5,7 +5,7 @@ export function exhibitionRevisionRef() {
   return doc(db, 'exhibitionSync', 'source');
 }
 
-/** Record an exhibition invalidation in the same commit as the source change. */
+/** Request a rebuild from the exhibition administrator only. */
 export function requestExhibitionRefresh(writer: { set(ref: DocumentReference, data: { revision: FieldValue }, options: SetOptions): void }) {
   writer.set(exhibitionRevisionRef(), { revision: increment(1) }, { merge: true });
 }

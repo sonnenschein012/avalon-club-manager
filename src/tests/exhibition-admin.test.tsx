@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   authChanged: undefined as ((user: { uid: string; email: string }) => void) | undefined,
   admin: vi.fn(),
+  syncFailure: undefined as ((error: { step: string; code: string }) => void) | undefined,
   save: vi.fn(),
   retry: vi.fn(),
 }));
@@ -26,7 +27,10 @@ vi.mock('../services/exhibitionSyncService', () => ({
   loadExhibitionStatus: async () => ({ pending: false, unmappedGameIds: ['source-game'], missingMemberIds: [] }),
   retryExhibitionRefresh: mocks.retry,
   saveExhibitionSettings: mocks.save,
-  watchExhibitionSync: () => () => {},
+  watchExhibitionSync: (_status: unknown, reportError: typeof mocks.syncFailure) => {
+    mocks.syncFailure = reportError;
+    return () => {};
+  },
 }));
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -55,6 +59,8 @@ describe('exhibition admin settings', () => {
     await act(async () => { mocks.authChanged?.({ uid: 'visitor', email: 'visitor@example.invalid' }); });
     expect(document.querySelector('[role="alert"]')?.textContent).toContain('관리자 권한이 필요합니다');
     await act(async () => { mocks.authChanged?.({ uid: 'operator', email: 'operator@example.invalid' }); });
+    await act(async () => { mocks.syncFailure?.({ step: '전시 데이터 저장', code: 'permission-denied' }); });
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('전시 데이터 저장 (permission-denied)');
     await act(async () => {
       document.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
       change('fieldset:first-of-type select', 'semester');

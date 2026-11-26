@@ -1,4 +1,3 @@
-import { requestExhibitionRefresh } from '../services/exhibitionRevision';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   doc, 
@@ -173,7 +172,7 @@ export function useMembersLogic() {
               count: importedMembers.length,
               detail: `중복 및 누락으로 제외 ${skippedCount}명`,
             }));
-            await commitBatchesInChunks(db, operations, 400, requestExhibitionRefresh);
+            await commitBatchesInChunks(db, operations);
             toast.success(`${importedMembers.length}명의 멤버가 추가되었습니다.${skippedCount > 0 ? ` (중복 및 누락 제외 ${skippedCount}명)` : ''}`);
           } else {
             toast.info(`추가할 멤버가 없습니다. (중복 및 누락 ${skippedCount}명)`);
@@ -229,7 +228,6 @@ export function useMembersLogic() {
             changes,
           });
         }
-        if (previous.name !== dataToSave.name || previous.studentId !== dataToSave.studentId) requestExhibitionRefresh(batch);
         await batch.commit();
       } else {
         const memberRef = doc(collection(db, 'members'));
@@ -245,7 +243,6 @@ export function useMembersLogic() {
           targetLabel: dataToSave.name,
           detail: `${dataToSave.nickname} · ${dataToSave.studentId}`,
         });
-        requestExhibitionRefresh(batch);
         await batch.commit();
       }
       setIsAdding(false);
@@ -279,7 +276,6 @@ export function useMembersLogic() {
           targetLabel: member.name,
           ...(linkedApplicants.size > 0 ? { detail: `연결된 지원자 ${linkedApplicants.size}명의 동아리원 연결을 함께 해제했습니다.` } : {}),
         });
-        requestExhibitionRefresh(batch);
         await batch.commit();
       }, {
         successMessage: '멤버가 삭제되었습니다.',

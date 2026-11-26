@@ -387,7 +387,8 @@ service cloud.firestore {
     match /exhibitionSync/{id} {
       allow get: if isAdmin() && id in ['source', 'progress'];
       allow create, update: if isAdmin() && id in ['source', 'progress'] &&
-        request.resource.data.keys().hasOnly(['revision']) &&
+        request.resource.data.keys().hasOnly(id == 'source' ? ['revision', 'fingerprint'] : ['revision']) &&
+        request.resource.data.get('fingerprint', '') is string &&
         request.resource.data.revision is int && request.resource.data.revision > 0 &&
         (id == 'progress' || request.resource.data.revision ==
           (resource == null ? 1 : resource.data.revision + 1));

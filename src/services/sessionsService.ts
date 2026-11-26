@@ -1,4 +1,4 @@
-import { requestExhibitionRefresh } from './exhibitionRevision';
+import { withFirestoreDeadline } from '../lib/firestoreDeadline';
 import { collection, doc, getDocs, query, where, deleteField, Timestamp, writeBatch, runTransaction } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import type { Session, StoredSessionGroup } from '../types';
@@ -50,7 +50,6 @@ export async function importSessionRecords(sessions: readonly ImportedSession[])
       });
     });
     if (records.length) {
-      requestExhibitionRefresh(transaction);
       addAuditEventToTransaction(transaction, { category: 'session', action: 'session.imported', targetLabel: `모임 기록 ${records.length}개`, count: records.length });
     }
   });
@@ -72,7 +71,6 @@ export async function createSessionRecord(draft: SessionDraft, boardMemberIds: s
     targetLabel: draft.name,
     detail: `${draft.date} · ${groupsSummary(draft.groups)}`,
   });
-  requestExhibitionRefresh(batch);
   await batch.commit();
 }
 
@@ -103,7 +101,6 @@ export async function updateSessionRecord(
         changes,
       });
     }
-    requestExhibitionRefresh(transaction);
   });
 }
 
@@ -114,8 +111,10 @@ export async function updateSessionGroupGames(
   gameTitlesById: ReadonlyMap<string, string> = new Map(),
 ) {
   const ref = doc(db, 'sessions', sessionId);
-  await runTransaction(db, async transaction => {
+  await withFirestoreDeadline(signal => runTransaction(db, async transaction => {
+    signal.throwIfAborted();
     const snapshot = await transaction.get(ref);
+    signal.throwIfAborted();
     if (!snapshot.exists()) throw new Error('세션을 찾을 수 없습니다.');
     const groups = (snapshot.data() as Session).groups || [];
     const targetGroup = groups.find(group => group.id === groupId);
@@ -139,23 +138,33 @@ export async function updateSessionGroupGames(
         changes,
       });
     }
-    requestExhibitionRefresh(transaction);
-  });
+  }, { maxAttempts: 3 }));
 }
 
 export async function deleteSessionRecord(sessionId: string, sessionName = '모임 기록') {
-  const linkedPlannings = await getDocs(query(collection(db, 'DailyPlannings'), where('sessionId', '==', sessionId)));
-  // Keep deletion and detachment atomic; never delete only part of the links.
-  if (linkedPlannings.size + 3 > 500) throw new Error('연결된 모임이 너무 많아 삭제할 수 없습니다.');
-  const batch = writeBatch(db);
-  linkedPlannings.docs.forEach(planning => batch.update(planning.ref, { sessionId: deleteField() }));
-  batch.delete(doc(db, 'sessions', sessionId));
-  addAuditEventToBatch(batch, {
-    category: 'session',
-    action: 'session.deleted',
-    targetId: sessionId,
-    targetLabel: sessionName,
+  await withFirestoreDeadline(async signal => {
+    const linkedPlannings = await getDocs(query(collection(db, 'DailyPlannings'), where('sessionId', '==', sessionId)));
+    signal.throwIfAborted();
+    // Keep deletion and detachment atomic.
+    if (linkedPlannings.size + 2 > 500) throw new Error('연결된 모임이 너무 많아 삭제할 수 없습니다.');
+    const sessionRef = doc(db, 'sessions', sessionId);
+    await runTransaction(db, async transaction => {
+      signal.throwIfAborted();
+      const [session, ...plannings] = await Promise.all([
+        transaction.get(sessionRef), ...linkedPlannings.docs.map(planning => transaction.get(planning.ref)),
+      ]);
+      signal.throwIfAborted();
+      for (const planning of plannings) {
+        if (planning.data()?.sessionId === sessionId) transaction.update(planning.ref, { sessionId: deleteField() });
+      }
+      if (!session.exists()) return;
+      transaction.delete(sessionRef);
+      addAuditEventToTransaction(transaction, {
+        category: 'session',
+        action: 'session.deleted',
+        targetId: sessionId,
+        targetLabel: sessionName,
+      });
+    }, { maxAttempts: 3 });
   });
-  requestExhibitionRefresh(batch);
-  await batch.commit();
 }

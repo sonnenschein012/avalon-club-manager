@@ -19,15 +19,19 @@ vi.mock('./auditService', () => ({
 vi.mock('firebase/firestore', () => ({
   collection: vi.fn(), doc: vi.fn(), increment: () => 'increment', writeBatch: vi.fn(() => batch),
   getDocs: vi.fn(), query: vi.fn(), where: vi.fn(), deleteField: () => 'delete-field',
-  runTransaction: async (_db: unknown, action: (tx: unknown) => Promise<void>) => action(batch),
+  runTransaction: async (_db: unknown, action: (tx: unknown) => Promise<void>) => { await action(batch); await batch.commit(); },
   Timestamp: { fromDate: (date: Date) => date },
 }));
 
 describe('session persistence boundaries', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('detaches every linked planning without changing its contents in the session deletion batch', async () => {
+  it('detaches every linked planning without changing its contents in the session deletion transaction', async () => {
     vi.mocked(getDocs).mockResolvedValue({ docs: [{ ref: 'planning-a' }, { ref: 'planning-b' }], size: 2 } as never);
+    batch.get.mockResolvedValueOnce({ exists: () => true });
+    for (const ref of ['planning-a', 'planning-b']) {
+      batch.get.mockResolvedValueOnce({ ref, data: () => ({ sessionId: 'session' }) });
+    }
     await deleteSessionRecord('session', '모임');
     expect(batch.update.mock.calls).toEqual([
       ['planning-a', { sessionId: 'delete-field' }], ['planning-b', { sessionId: 'delete-field' }],
@@ -42,8 +46,39 @@ describe('session persistence boundaries', () => {
     await expect(deleteSessionRecord('session')).rejects.toThrow('lookup failed');
     expect(batch.delete).not.toHaveBeenCalled();
     vi.mocked(getDocs).mockResolvedValueOnce({ docs: [], size: 0 } as never);
+    batch.get.mockResolvedValueOnce({ exists: () => true });
     batch.commit.mockRejectedValueOnce(new Error('commit failed'));
     await expect(deleteSessionRecord('session')).rejects.toThrow('commit failed');
+  });
+
+  it('releases deletion after a read deadline and does not commit when the late read completes', async () => {
+    vi.useFakeTimers();
+    try {
+      let complete!: (value: Awaited<ReturnType<typeof getDocs>>) => void;
+      vi.mocked(getDocs).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+      const deleted = expect(deleteSessionRecord('session')).rejects.toMatchObject({ code: 'deadline-exceeded' });
+      await vi.advanceTimersByTimeAsync(20_000);
+      await deleted;
+      complete({ size: 0, docs: [] } as never);
+      await vi.runAllTimersAsync();
+      expect(batch.commit).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('times out an unresponsive game read without writing after it resolves', async () => {
+    vi.useFakeTimers();
+    try {
+      let complete!: (value: unknown) => void;
+      batch.get.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+      const saved = expect(updateSessionGroupGames('session', 'group', ['game'])).rejects
+        .toMatchObject({ code: 'deadline-exceeded' });
+      await vi.advanceTimersByTimeAsync(20_000);
+      await saved;
+      complete({ exists: () => true, data: () => ({ groups: [{ id: 'group', gameIds: [] }] }) });
+      await vi.runAllTimersAsync();
+      expect(batch.update).not.toHaveBeenCalled();
+      expect(batch.commit).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 
   it('retains absent versus explicit empty imported role snapshots', async () => {

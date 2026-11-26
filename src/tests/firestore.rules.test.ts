@@ -17,7 +17,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 
-import { loadExhibitionSettings, loadExhibitionStatus, refreshExhibitions, retryExhibitionRefresh, saveExhibitionSettings } from '../services/exhibitionSyncService';
+import { loadExhibitionSettings, loadExhibitionStatus, refreshExhibitions, retryExhibitionRefresh, saveExhibitionSettings, watchExhibitionSync } from '../services/exhibitionSyncService';
 import { importSessionRecords, updateSessionGroupGames, deleteSessionRecord } from '../services/sessionsService';
 import { requestExhibitionRefresh } from '../services/exhibitionRevision';
 import { exhibitionNameKey } from '../domain/exhibition/collection';
@@ -244,7 +244,6 @@ describe('Firestore Security Rules', () => {
     const batch = writeBatch(operator);
     batch.set(doc(operator, 'sessions/first'), { name: '합성', date: Timestamp.fromDate(new Date('2026-09-01')),
       groups: [{ id: 'group', memberIds: ['a'], gameIds: ['game'] }] });
-    requestExhibitionRefresh(batch);
     await batch.commit();
 
     const access = 'exhibitionAccess/season';
@@ -265,7 +264,6 @@ describe('Firestore Security Rules', () => {
       await started;
       const remove = writeBatch(operator);
       remove.delete(doc(operator, 'sessions/first'));
-      requestExhibitionRefresh(remove);
       await remove.commit();
       sync.beforeBuild = undefined;
       expect(await refreshExhibitions()).toBe(true);
@@ -333,7 +331,71 @@ describe('Firestore Security Rules', () => {
     await expect(publicReader.loadExhibitionProfile(id)).rejects.toThrow('현재 볼 수 있는 기록이 없습니다');
   }, 20_000);
 
-  it('keeps a 400-record import and exhibition invalidation atomic', async () => {
+  it('isolates source game edits and deletes from a rejected exhibition marker and recovers after repair', async () => {
+    if (!testEnv) throw new Error('testEnv not initialized');
+    await seedRegularAdmin();
+    const operator = testEnv.authenticatedContext('isolation-admin', { email: REGULAR_ADMIN_EMAIL }).firestore();
+    sync.db = operator;
+    const marker = doc(operator, 'exhibitionSync/source');
+    const meeting = doc(operator, 'sessions/isolated');
+    await saveExhibitionSettings('avalon', { enabled: true, period: { kind: 'all' }, gameMapping: [] });
+    await importSessionRecords([{ id: 'isolated', date: '2026-09-02', name: '합성',
+      groups: [{ id: 'group', memberIds: [], gameIds: [] }] }]);
+    await testEnv.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'exhibitionSync/source'), { revision: 1, obsoleteField: true });
+    });
+    const oldCommit = writeBatch(operator);
+    oldCommit.delete(meeting);
+    requestExhibitionRefresh(oldCommit);
+    await assertFails(oldCommit.commit());
+    expect((await getDoc(meeting)).exists()).toBe(true);
+
+    await updateSessionGroupGames('isolated', 'group', ['new-game']);
+    expect((await getDoc(meeting)).data()?.groups[0].gameIds).toEqual(['new-game']);
+    await deleteSessionRecord('isolated');
+    expect((await getDoc(meeting)).exists()).toBe(false);
+    // The full scan repairs extra fields by replacing the marker and advances
+    // even though the source edits never wrote to the exhibition collection.
+    expect(await refreshExhibitions()).toBe(true);
+    expect((await getDoc(marker)).data()).toMatchObject({ revision: 2, fingerprint: expect.any(String) });
+  });
+
+  it('reconciles operating session changes while the exhibition administrator is open', async () => {
+    if (!testEnv) throw new Error('testEnv not initialized');
+    await seedRegularAdmin();
+    const operator = testEnv.authenticatedContext('watch-admin', { email: REGULAR_ADMIN_EMAIL }).firestore();
+    sync.db = operator;
+    await testEnv.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'members/a'), { name: '자동 반영 부원' });
+    });
+    await saveExhibitionSettings('avalon', { enabled: true, period: { kind: 'all' }, gameMapping: [] });
+    await refreshExhibitions();
+    const access = doc(operator, 'exhibitionAccess/avalon');
+    const initial = (await getDoc(access)).data()?.generationId;
+    const marker = doc(operator, 'exhibitionSync/source');
+    const errors = vi.fn();
+    const stop = watchExhibitionSync(() => {}, errors);
+    try {
+      await importSessionRecords([{ id: 'live', date: '2026-09-02', name: '실시간',
+        groups: [{ id: 'group', memberIds: ['a'], gameIds: [] }] }]);
+      await vi.waitFor(async () => {
+        const updated = (await getDoc(access)).data()?.generationId;
+        expect(updated).not.toBe(initial);
+        const key = await exhibitionNameKey('자동 반영 부원');
+        const path = `exhibitionAccess/avalon/generations/${updated}/names/${key}`;
+        expect((await getDoc(doc(operator, path))).exists()).toBe(true);
+      }, { timeout: 10_000, interval: 300 });
+      expect((await getDoc(marker)).data()?.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      const beforeRetry = (await getDoc(access)).data()?.generationId;
+      await retryExhibitionRefresh();
+      await vi.waitFor(async () => {
+        expect((await getDoc(access)).data()?.generationId).not.toBe(beforeRetry);
+        expect((await loadExhibitionStatus('avalon')).pending).toBe(false);
+      }, { timeout: 10_000, interval: 300 });
+    } finally { stop(); }
+  }, 20_000);
+
+  it('keeps a 400-record import atomic without writing to the exhibition', async () => {
     if (!testEnv) throw new Error('testEnv not initialized');
     await seedRegularAdmin();
     const operator = testEnv.authenticatedContext('import-admin', { email: REGULAR_ADMIN_EMAIL }).firestore();
@@ -344,11 +406,11 @@ describe('Firestore Security Rules', () => {
     await importSessionRecords(records);
     expect((await getDocs(collection(operator, 'sessions'))).size).toBe(400);
     const revision = doc(operator, 'exhibitionSync/source');
-    expect((await getDoc(revision)).data()?.revision).toBe(1);
+    expect((await getDoc(revision)).exists()).toBe(false);
     const extra = { ...records[0]!, id: 'not-written' };
     await expect(importSessionRecords([extra, records[0]!])).rejects.toThrow('이미 존재하는 세션 ID');
     expect((await getDoc(doc(operator, 'sessions/not-written'))).exists()).toBe(false);
-    expect((await getDoc(revision)).data()?.revision).toBe(1);
+    expect((await getDoc(revision)).exists()).toBe(false);
   }, 20_000);
 
   it('rejects malformed core records while allowing incremental legacy repairs', async () => {

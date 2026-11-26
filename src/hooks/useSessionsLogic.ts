@@ -1,3 +1,4 @@
+import { FirestoreDeadlineError } from '../lib/firestoreDeadline';
 import React, { useState, useMemo } from 'react';
 import Papa from 'papaparse';
 import { handleFirestoreError, OperationType } from '../lib/firebase';
@@ -208,8 +209,10 @@ export function useSessionsLogic() {
     try {
       await runAction('session-delete', () => deleteSessionRecord(session.id, session.name), {
         successMessage: '세션 기록이 삭제되었습니다.',
-        errorMessage: '세션 기록을 삭제하지 못했습니다.',
-        onError: (error) => handleFirestoreError(error, OperationType.DELETE, `sessions/${session.id}`),
+        onError: (error) => {
+          toast.error(error instanceof FirestoreDeadlineError ? error.message : '세션 기록을 삭제하지 못했습니다.');
+          handleFirestoreError(error, OperationType.DELETE, `sessions/${session.id}`);
+        },
       });
     } finally {
       setItemToDelete(null);
@@ -220,8 +223,10 @@ export function useSessionsLogic() {
     const gameTitlesById = new Map(games.map(game => [game.id, game.title]));
     const result = await runAction('group-games-save', () => updateSessionGroupGames(sessionId, groupId, gameIds, gameTitlesById), {
       successMessage: '조 게임 기록이 성공적으로 수정되었습니다.',
-      errorMessage: '저장 중 오류가 발생했습니다.',
-      onError: (error) => handleFirestoreError(error, OperationType.UPDATE, `sessions/${sessionId}`),
+      onError: (error) => {
+        toast.error(error instanceof FirestoreDeadlineError ? error.message : '저장 중 오류가 발생했습니다.');
+        handleFirestoreError(error, OperationType.UPDATE, `sessions/${sessionId}`);
+      },
     });
     return result.succeeded;
   };

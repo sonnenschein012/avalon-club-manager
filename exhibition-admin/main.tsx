@@ -5,7 +5,7 @@ import { collection, getDocsFromServer } from 'firebase/firestore';
 import { auth, checkAdminStatus, db, logout, signInWithGoogle } from '../src/lib/firebase';
 import {
   loadExhibitionSettings, loadExhibitionStatus, retryExhibitionRefresh, saveExhibitionSettings,
-  watchExhibitionSync, type ExhibitionSettings, type ExhibitionSyncStatus,
+  watchExhibitionSync, type ExhibitionSettings, type ExhibitionSyncStatus, type ExhibitionSyncError,
 } from '../src/services/exhibitionSyncService';
 import pins from '../exhibition/games.json';
 import './style.css';
@@ -54,8 +54,8 @@ function ExhibitionForm({ id, games, initial, sync }: {
         descriptions: Object.fromEntries(Object.entries(descriptions).filter(([, value]) => value.trim()).map(([key, value]) => [key, value.trim()])),
       });
       setMessage(enabled ? '설정을 저장했습니다. 전시에 자동 반영됩니다.' : '설정을 저장하고 전시를 비공개로 전환했습니다.');
-    } catch {
-      setMessage('설정을 저장하지 못했습니다. 관리자 권한과 연결 상태를 확인해 주세요.');
+    } catch (error) {
+      setMessage(`설정을 저장하지 못했습니다. (${(error as { code?: string }).code ?? 'unexpected-error'})`);
     } finally { setBusy(false); }
   }
 
@@ -64,14 +64,14 @@ function ExhibitionForm({ id, games, initial, sync }: {
     try {
       await retryExhibitionRefresh();
       setMessage('저장된 설정으로 다시 반영을 요청했습니다.');
-    } catch {
-      setMessage('다시 반영을 요청하지 못했습니다.');
+    } catch (error) {
+      setMessage(`다시 반영을 요청하지 못했습니다. (${(error as { code?: string }).code ?? 'unexpected-error'})`);
     } finally { setBusy(false); }
   }
 
   const unmapped = new Set(status?.unmappedGameIds ?? []);
   const titles = new Map(games.map(game => [game.id, game.title]));
-  const statusText = sync === 'syncing' ? '반영 중' : sync === 'pending' || status?.pending ? '반영 대기'
+  const statusText = sync === 'error' ? '반영 실패 · 자동 재시도 예정' : sync === 'syncing' ? '반영 중' : sync === 'pending' || status?.pending ? '반영 대기'
     : status ? '대기 작업 없음' : '상태 확인 중';
 
   return <>
@@ -135,9 +135,10 @@ function Workspace({ user }: { user: User }) {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [loaded, setLoaded] = useState<{ settings: ExhibitionSettings; games: GameChoice[] }>();
   const [sync, setSync] = useState<ExhibitionSyncStatus>('idle');
+  const [syncError, setSyncError] = useState<ExhibitionSyncError | null>(null);
   const [error, setError] = useState('');
 
-  useEffect(() => watchExhibitionSync(setSync), []);
+  useEffect(() => watchExhibitionSync(setSync, setSyncError), []);
   useEffect(() => {
     let cancelled = false;
     void Promise.all([loadExhibitionSettings(id), getDocsFromServer(collection(db, 'games'))]).then(([settings, games]) => {
@@ -162,6 +163,9 @@ function Workspace({ user }: { user: User }) {
       <label>전시 ID<input name="exhibitionId" defaultValue={id} required maxLength={60} pattern="[a-zA-Z0-9_\-]+" /></label>
       <button type="submit">열기</button>
     </form>
+    {syncError && <p role="alert">
+      전시 동기화 오류 · {syncError.step} ({syncError.code})
+    </p>}
     {error ? <p role="alert">{error}</p> : loaded
       ? <ExhibitionForm key={id} id={id} initial={loaded.settings} games={loaded.games} sync={sync} />
       : <p role="status">전시 설정을 불러오는 중입니다.</p>}
