@@ -10,6 +10,10 @@ on:
 
 permissions: {}
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   hosting:
     if: github.ref == 'refs/heads/main'
