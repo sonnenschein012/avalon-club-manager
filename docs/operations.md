@@ -33,6 +33,23 @@ npm run deploy:staging:hosting
 
 스테이징은 검증용 환경이므로 배포마다 전체 `npm run check`를 실행하지 않습니다. 변경 기능과 직접 관련된 검사만 최소 범위로 실행하고, 배포에는 staging 빌드·번들 분리 검사와 변경 화면 확인만 수행합니다. 규칙·인덱스 변경 시에는 해당 경계 검사를 추가합니다.
 
+### GitHub Actions 운영 Hosting 배포
+
+`Actions → Production Hosting → Run workflow`에서 `main`을 선택합니다.
+
+1. 먼저 `deploy` 체크박스를 비운 채 실행합니다. GitHub OIDC를 `github-deploy` 서비스 계정으로 교환하고, 고정된 Firebase CLI로 `avalondgu` 사이트를 조회합니다. 이어서 프로젝트의 Hosting 배포 권한을 읽기 전용 IAM API로 검사합니다. 결과는 실행 요약에서 확인합니다.
+2. 검증 성공 후 실제 배포가 필요하면 같은 커밋에서 `deploy`를 선택해 새 실행을 시작합니다. 다른 사용자가 `Production` 배포를 검토하고 승인하면, 워크플로가 승인 기록을 확인하고 운영 번들 빌드와 인증·권한 검사를 거쳐 Hosting에 공개합니다. 재시도가 필요하면 새 실행으로 다시 승인을 받습니다.
+
+GitHub의 `Settings → Environments → Production`에 `GCP_WORKLOAD_IDENTITY_PROVIDER`와 `GCP_SERVICE_ACCOUNT`를 환경 변수로 설정합니다. **Required reviewers**를 지정하고 **Prevent self-review**를 켠 뒤 관리자 우회도 끕니다. 두 모드 모두 같은 환경에서 변수를 읽으므로 GitHub의 환경 검토는 검증 실행에도 적용됩니다. 실제 배포에는 해당 배포 실행에 대한 별도 승인 기록이 필요합니다.
+
+#### 서비스 계정 권한
+
+- `github-deploy` 서비스 계정 자체에 GitHub 저장소로 제한한 WIF principal의 `roles/iam.workloadIdentityUser` 바인딩을 둡니다. WIF 공급자 조건은 저장소와 `refs/heads/main`으로 제한합니다. 환경을 사용하는 job의 기본 OIDC subject에는 브랜치 대신 환경 이름이 들어가므로 브랜치는 `assertion.ref`로 확인합니다. 환경 이름을 조건에 사용한다면 GitHub에 표시된 `Production`의 대소문자를 맞춥니다.
+- 운영 프로젝트 `gen-lang-client-0205444206`에 기존 정적 사이트 배포용 커스텀 역할을 부여할 경우, 워크플로가 검사하는 권한은 `firebase.projects.get`, `firebasehosting.sites.get`, `firebasehosting.sites.list`, `firebasehosting.sites.update`입니다. 사전 정의 역할로는 `roles/firebasehosting.admin`을 사용할 수 있으며 이 역할은 사이트 생성·삭제 권한도 포함합니다. Firebase 공식 CLI 역할 가이드는 `roles/serviceusage.apiKeysViewer`도 함께 지정합니다. [Firebase 제품별 역할](https://firebase.google.com/docs/projects/iam/roles-predefined-product)
+- GitHub Actions의 `google-github-actions/auth`가 WIF용 ADC 파일을 만들고 `GOOGLE_APPLICATION_CREDENTIALS`를 설정합니다. Firebase CLI 15.28.1은 Google Auth 라이브러리로 이 외부 계정 형식을 읽습니다. 워크플로의 사이트 조회가 실제 GitHub 실행에서 이 경로를 확인합니다. [Firebase CLI 인증](https://firebase.google.com/docs/cli#cli-ci-systems) · [Google Cloud 인증 액션](https://github.com/google-github-actions/auth)
+
+### 로컬 배포 명령
+
 운영 배포는 검토한 변경 범위에 따라 명시적으로 실행합니다.
 
 ```bash

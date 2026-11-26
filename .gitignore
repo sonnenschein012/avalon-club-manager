@@ -38,3 +38,6 @@ graphify-out/*
 !graphify-out/scope.json
 
 .ua/
+
+# Google GitHub Actions WIF credentials
+gha-creds-*.json
