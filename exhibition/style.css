@@ -419,19 +419,18 @@ html,.modal{
 .companion-filter{margin:0 auto 10px;text-align:center;font:400 15px/1.8 var(--korean)}
 .companion-filter a{margin-left:10px}
 
-/* Pins sit in staggered clusters instead of reserving uniform rows. */
+/* Pack the pins against the measured width of the exhibit. */
 .scatter-field.ranked-layout {
-  --pin-scale: 1;
-  min-height: max(54px, var(--canvas-0));
+  min-height: max(54px, var(--canvas-height, 0px));
   max-width: 1110px;
   margin-inline: auto;
 }
 .scatter-field.ranked-layout .scatter-pin {
-  left: var(--pin-x-0);
-  top: var(--pin-y-0);
+  left: var(--pin-x);
+  top: var(--pin-y);
   transform: translate(-50%, -50%);
-  width: calc(var(--size) * var(--pin-scale));
-  height: calc(var(--size) * var(--pin-scale));
+  width: var(--size);
+  height: var(--size);
   max-width: none;
 }
 .scatter-field.ranked-layout .scatter-pin img {
@@ -441,12 +440,15 @@ html,.modal{
   max-height: none;
   object-fit: contain;
 }
+.scatter-field.ranked-layout .pin-label {
+  top: calc(50% + var(--pin-radius) + 3px);
+  width: var(--pin-label-width);
+  max-width: none;
+  margin-top: 0;
+  line-height: 1.3;
+}
+.scatter-field.ranked-layout .pending-art {
+  width: 80%;
+  height: 80%;
+}
 .scatter-field.ranked-layout .blank { margin: 0; padding-block: 16px; }
-@media (max-width: 980px) {
-  .scatter-field.ranked-layout { --pin-scale: .82; min-height: max(54px, var(--canvas-1)); }
-  .scatter-field.ranked-layout .scatter-pin { left: var(--pin-x-1); top: var(--pin-y-1); }
-}
-@media (max-width: 620px) {
-  .scatter-field.ranked-layout { --pin-scale: .64; min-height: max(54px, var(--canvas-2)); }
-  .scatter-field.ranked-layout .scatter-pin { left: var(--pin-x-2); top: var(--pin-y-2); }
-}

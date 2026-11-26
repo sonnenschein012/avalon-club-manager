@@ -37,13 +37,10 @@ function intro(){
   return '<header class="exhibit-intro"><h1 class="exhibit-title" lang="en"><span class="title-name">'+esc(title.slice(0,split))+'</span> <span class="title-kind">'+esc(title.slice(split+1))+'</span></h1></header>';
 }
 
-function scatterPin(slot) {
-  const { id, size, rotation, positions } = slot;
-  const vars = `--size:${size}px;--r:${rotation}deg;` + positions.map(({ x, y }, index) =>
-    `--pin-x-${index}:${x}%;--pin-y-${index}:${y}px`).join(';');
+function scatterPin(id) {
   const item=games[id];
   const art=item.pending?'<span class="pending-art" aria-hidden="true"><span>+</span><small>제작 예정</small></span>':'<img src="'+asset(id)+'" alt="" draggable="false" loading="lazy" decoding="async">';
-  return '<button type="button" class="pin scatter-pin'+(item.pending?' pending-pin':'')+'" aria-label="'+esc(item.ko)+(item.pending?' · 핀 제작 예정':' 핀과 함께한 날 보기')+'" data-pin="'+id+'" style="'+vars+'">'+art+'<span class="pin-label">'+esc(item.ko)+'</span></button>';
+  return '<button type="button" class="pin scatter-pin'+(item.pending?' pending-pin':'')+'" aria-label="'+esc(item.ko)+(item.pending?' · 핀 제작 예정':' 핀과 함께한 날 보기')+'" data-pin="'+id+'">'+art+'<span class="pin-label">'+esc(item.ko)+'</span></button>';
 }
 function showEntry(){
   document.title="Your Collection";
@@ -107,19 +104,48 @@ function archive(state) {
 
 function collection(state) {
   const ordered = state.gameOrder.filter(id => Object.hasOwn(games, id));
-  const { slots, heights } = placeRankedPins(ordered);
-  const pins = slots.map(scatterPin).join('');
-  const heightStyle = heights.map((height, index) => `--canvas-${index}:${height}px`).join(';');
+  const pins = ordered.map(scatterPin).join('');
   const companionHeading = state.companion
     ? `<div class="companion-filter">${esc(state.companion.name)}님과 함께한 게임<a class="text-control" href="${formPath(state.id, state.date)}">필터 해제</a></div>`
     : '';
   const empty = '<p class="blank">'+(state.companion ? '함께 플레이한 게임이 기록되어 있지 않습니다.' :
     state.date ? '이날 플레이한 게임은 기록되어 있지 않습니다.' : '플레이한 게임이 기록되어 있지 않습니다.')+'</p>';
   return intro()+companionHeading+
-    `<section class="works scatter-field ranked-layout${showLabels ? '' : ' labels-off'}" aria-label="보드게임 컬렉션" style="${heightStyle}">${pins || empty}</section>`+
+    `<section class="works scatter-field ranked-layout${showLabels ? '' : ' labels-off'}" aria-label="보드게임 컬렉션">${pins || empty}</section>`+
     '<div class="board-caption"><p class="caption-hint">'+icon('hand')+
     '<span>핀을 고르면 함께한 날의 기록이 열립니다.</span></p><button class="text-control label-toggle" type="button" aria-pressed="'+
     showLabels+'">이름표<span aria-hidden="true" class="label-switch"></span></button></div>'+archive(state);
+}
+
+let laidOutField;
+let laidOutWidth;
+
+function layoutPins() {
+  const field = main.querySelector('.ranked-layout');
+  if (!field) return;
+  const width = field.clientWidth || 360;
+  if (field === laidOutField && width === laidOutWidth) return;
+
+  const pins = [...field.querySelectorAll('[data-pin]')];
+  const { slots, height, labelWidth } = placeRankedPins(pins.map(pin => pin.dataset.pin), width);
+  field.style.setProperty('--canvas-height', height + 'px');
+  if (slots.length) field.style.setProperty('--pin-label-width', labelWidth + 'px');
+  slots.forEach(({ size, rotation, radius, x, y }, index) => {
+    const { style } = pins[index];
+    style.setProperty('--size', size + 'px');
+    style.setProperty('--r', rotation + 'deg');
+    style.setProperty('--pin-radius', radius + 'px');
+    style.setProperty('--pin-x', x + 'px');
+    style.setProperty('--pin-y', y + 'px');
+  });
+  laidOutField = field;
+  laidOutWidth = width;
+}
+
+if (typeof ResizeObserver === 'function') {
+  new ResizeObserver(layoutPins).observe(main);
+} else {
+  window.addEventListener('resize', layoutPins);
 }
 
 function renderObject(state) {
@@ -149,6 +175,7 @@ function render(state) {
   if (objectDialog.open && !state.pin) objectDialog.close();
   if (changed) {
     main.innerHTML = collection(state);
+    layoutPins();
     baseKey = nextKey;
     if (onDate) main.querySelector('.archive-date[aria-current]')?.focus({ preventScroll: true });
     else if (onCompanion) main.querySelector('.archive-people a[aria-current]')?.focus({ preventScroll: true });
@@ -169,7 +196,7 @@ function render(state) {
 
 function resetEntry(message = '') {
   entryRequest++;
-  profile = current = undefined;
+  profile = current = laidOutField = undefined;
   baseKey = lastOpenPin = '';
   objectTrigger = undefined;
   if (objectDialog.open) objectDialog.close();
