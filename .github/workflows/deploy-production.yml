@@ -1,0 +1,148 @@
+name: Production Hosting
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Publish to live Hosting after a separate Production review
+        type: boolean
+        default: false
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  hosting:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: Production
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    concurrency:
+      group: production-hosting
+      cancel-in-progress: false
+    env:
+      FIREBASE_PROJECT: gen-lang-client-0205444206
+      FIREBASE_SITE: avalondgu
+      FIREBASE_TARGET: avalondgu-site
+    steps:
+      - name: Require a separate Production approval
+        if: inputs.deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Approval history belongs to the run, so require a new dispatch for retries.
+          if [[ "$GITHUB_RUN_ATTEMPT" != 1 ]]; then
+            echo "::error::Start a new deployment run to request a fresh approval."
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" |
+            jq -e --arg actor "$GITHUB_ACTOR" '
+              any(.[]; .state == "approved"
+                and (.user.login | ascii_downcase) != ($actor | ascii_downcase)
+                and any(.environments[]; (.name | ascii_downcase) == "production"))
+            ' >/dev/null || {
+              echo "::error::A Production approval from a different user is required. Check the environment reviewer settings and the run approval history."
+              exit 1
+            }
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build production bundle
+        if: inputs.deploy
+        run: npm run build
+
+      - name: Check WIF configuration
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+        run: |
+          missing=0
+          for mapping in WIF_PROVIDER:GCP_WORKLOAD_IDENTITY_PROVIDER SERVICE_ACCOUNT:GCP_SERVICE_ACCOUNT; do
+            key=${mapping%%:*}
+            name=${mapping#*:}
+            if [[ -z "${!key}" ]]; then
+              echo "::error::Production repository environment variable $name is missing."
+              missing=1
+            fi
+          done
+          (( missing == 0 )) || exit 1
+          if [[ ! "$WIF_PROVIDER" =~ ^projects/[0-9]+/locations/global/workloadIdentityPools/[^/]+/providers/[^/]+$ ]]; then
+            echo "::error::GCP_WORKLOAD_IDENTITY_PROVIDER must be the full provider resource name using the project number."
+            exit 1
+          fi
+          if [[ ! "$SERVICE_ACCOUNT" =~ ^[^@[:space:]]+@[^@[:space:]]+\.iam\.gserviceaccount\.com$ ]]; then
+            echo "::error::GCP_SERVICE_ACCOUNT must be a Google Cloud service account email."
+            exit 1
+          fi
+
+      - name: Exchange GitHub OIDC token with Google STS
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          project_id: ${{ env.FIREBASE_PROJECT }}
+          create_credentials_file: false
+          export_environment_variables: false
+
+      - name: Impersonate deploy service account and configure ADC
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ env.FIREBASE_PROJECT }}
+          token_format: access_token
+
+      - name: Verify Firebase CLI authentication and Hosting site
+        run: |
+          npx --no-install firebase --version
+          result="$RUNNER_TEMP/firebase-hosting-sites.json"
+          if ! npx --no-install firebase hosting:sites:list --project "$FIREBASE_PROJECT" --non-interactive --json > "$result"; then
+            jq -r '.error // .message // empty' "$result"
+            echo "::error::Firebase CLI site lookup failed after service-account authentication."
+            exit 1
+          fi
+          if ! jq -e --arg site "$FIREBASE_SITE" '
+            .status == "success" and any(.result.sites[]; (.name | split("/") | last) == $site)
+          ' "$result" >/dev/null; then
+            echo "::error::Expected Hosting site was not listed in the configured Firebase project."
+            exit 1
+          fi
+          echo "Firebase CLI authenticated with ADC and listed $FIREBASE_SITE."
+
+      - name: Verify Hosting deployment permissions
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          required='["firebase.projects.get","firebasehosting.sites.get","firebasehosting.sites.list","firebasehosting.sites.update"]'
+          granted=$(curl --silent --show-error --fail-with-body \
+            --header "Authorization: Bearer $ACCESS_TOKEN" \
+            --json "{\"permissions\":$required}" \
+            "https://cloudresourcemanager.googleapis.com/v1/projects/${FIREBASE_PROJECT}:testIamPermissions")
+          missing=$(jq -r --argjson required "$required" \
+            '($required - (.permissions // []))[]' <<<"$granted")
+          if [[ -n "$missing" ]]; then
+            echo "::error::Missing project IAM permissions"
+            printf '%s\n' "$missing"
+            exit 1
+          fi
+          echo "Firebase CLI ADC and Hosting deployment permissions verified." >> "$GITHUB_STEP_SUMMARY"
+          echo "Verified permissions: $required"
+
+      - name: Publish production Hosting
+        if: inputs.deploy
+        run: |
+          npx --no-install firebase deploy --project "$FIREBASE_PROJECT" --config firebase.json \
+            --only "hosting:$FIREBASE_TARGET" --non-interactive --message "$GITHUB_SHA"
