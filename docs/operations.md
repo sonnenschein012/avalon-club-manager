@@ -86,28 +86,20 @@ CI는 main push/PR에서 lint, 타입, 단위 테스트, 규칙 테스트, 운�
 
 공개 빌드의 압축 추정치는 JS/CSS 합계 약 100 KB이고, 핀은 평균 약 122 KB, 최대 약 1.33 MB입니다. 핀 12개를 평균 크기로 가정한 전송량은 약 1.47 MB이며 여기에는 글꼴·배경·Firestore 응답이 포함되지 않습니다. 실제 동시 방문 및 브라우저 캐시 적중률을 포함한 운영 사용량은 별도 확인이 필요합니다.
 
-### 운영 배포 명령
+### GitHub Actions 운영 배포
 
-Firebase CLI에 공동 운영 계정으로 로그인하고 프로젝트와 사이트 목록을 확인합니다. 사이트가 아직 없다면 승인한 ID로 생성합니다. 이미 해당 프로젝트에 있는 사이트는 기존 ID를 사용합니다. 여기의 두 이름은 운영진이 선택한 주소입니다.
+GitHub의 **Actions → Production Hosting → Run workflow**에서 `main`과 대상을 선택합니다. `deploy`를 해제하면 빌드·Firebase 인증·대상별 권한만 확인합니다. 운영 반영 시 저장소 관리자가 `deploy`를 선택하고 직접 실행합니다. 워크플로는 실행 요청자와 재실행자의 저장소 관리자 권한을 조회합니다. 인증은 기존 `main`과 `Production` 환경의 OIDC/WIF 연결을 사용합니다.
 
-```bash
-npx firebase login
-npx firebase hosting:sites:list --project gen-lang-client-0205444206
-# 각 사이트가 아직 없을 때만 생성
-npx firebase hosting:sites:create avalon-collection --project gen-lang-client-0205444206
-npx firebase hosting:sites:create avalon-collection-admin --project gen-lang-client-0205444206
-```
+| 대상 | 반영 범위 |
+| --- | --- |
+| `manager` | 기존 운영 앱 `avalondgu` |
+| `exhibition` | 부원용 컬렉션 `avalon-collection` |
+| `exhibition-admin` | 전시 관리자 앱 `avalon-collection-admin` |
+| `firestore-rules` | 운영 named Firestore 데이터베이스의 규칙 |
+| `all` | Firestore 규칙 → 운영 앱 → 전시 관리자 앱 → 부원용 컬렉션 |
 
-Firebase Console의 Authentication 승인 도메인에 `avalon-collection-admin.web.app`을 추가하고 프로젝트의 Spark 상태를 확인합니다. 저장소 루트에서 운영용 빌드를 만든 뒤 규칙, 기존 운영 앱, 두 전시 사이트 순서로 배포합니다.
+`all`은 선택된 빌드와 권한 확인이 모두 통과한 다음 첫 배포를 시작합니다. 단독 배포에서 새 관리자 앱이 새 규칙을 필요로 하면 `firestore-rules`를 먼저 적용합니다. 규칙 대상에는 인덱스 배포가 포함되지 않습니다. 배포 도중 실패하면 완료된 앞 단계가 먼저 반영되므로 Actions 로그에서 완료 범위를 확인하고 남은 대상만 재실행합니다.
 
-```bash
-npm ci
-npm run build
-npm run exhibition:build
-npm run exhibition:admin:build
-npx firebase deploy --project gen-lang-client-0205444206 --config firebase.json --only firestore
-npx firebase deploy --project gen-lang-client-0205444206 --config firebase.json --only hosting:avalondgu-site
-npx firebase deploy --project gen-lang-client-0205444206 --config firebase.exhibition.json --only hosting:avalon-exhibition,hosting:avalon-exhibition-admin
-```
+저장소 **Settings → Environments → Production**에 `GCP_WORKLOAD_IDENTITY_PROVIDER`와 `GCP_SERVICE_ACCOUNT`를 유지합니다. GCP 쪽에는 기존 GitHub 저장소·`main`·`Production`으로 한정한 공급자 조건과 서비스 계정 연결을 유지합니다. 검증 실행의 권한 검사에서 부족한 권한 이름을 확인할 수 있습니다. Hosting 대상과 규칙 대상은 필요한 권한을 따로 검사합니다.
 
-관리 사이트에서 전시 ID `avalon`을 열어 처음에는 비공개로 기간과 핀 매핑을 저장합니다. 브라우저에서 관리자 로그인과 기존 운영 앱을 확인한 뒤 전시를 공개합니다. 공개 후 대표 기록의 이름 조회, 날짜, 동료별 게임과 핀 설명을 확인합니다.
+관리자 사이트에서 전시 ID `avalon`을 열어 처음에는 비공개로 기간과 핀 매핑을 저장합니다. 브라우저에서 관리자 로그인과 기존 운영 앱을 확인한 뒤 전시를 공개합니다. 공개 후 대표 기록의 이름 조회, 날짜, 동료별 게임과 핀 설명을 확인합니다.

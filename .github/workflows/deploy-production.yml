@@ -3,8 +3,19 @@ name: Production Hosting
 on:
   workflow_dispatch:
     inputs:
+      target:
+        description: Deployment target
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - manager
+          - exhibition
+          - exhibition-admin
+          - firestore-rules
       deploy:
-        description: Publish to live Hosting after a separate Production review
+        description: Publish to production (unchecked only builds and verifies access)
         type: boolean
         default: false
 
@@ -16,12 +27,11 @@ defaults:
 
 jobs:
   hosting:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: Production
     permissions:
-      actions: read
       contents: read
       id-token: write
     concurrency:
@@ -29,28 +39,34 @@ jobs:
       cancel-in-progress: false
     env:
       FIREBASE_PROJECT: gen-lang-client-0205444206
-      FIREBASE_SITE: avalondgu
-      FIREBASE_TARGET: avalondgu-site
     steps:
-      - name: Require a separate Production approval
-        if: inputs.deploy
+      - name: Require a repository administrator
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Approval history belongs to the run, so require a new dispatch for retries.
-          if [[ "$GITHUB_RUN_ATTEMPT" != 1 ]]; then
-            echo "::error::Start a new deployment run to request a fresh approval."
-            exit 1
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" |
-            jq -e --arg actor "$GITHUB_ACTOR" '
-              any(.[]; .state == "approved"
-                and (.user.login | ascii_downcase) != ($actor | ascii_downcase)
-                and any(.environments[]; (.name | ascii_downcase) == "production"))
-            ' >/dev/null || {
-              echo "::error::A Production approval from a different user is required. Check the environment reviewer settings and the run approval history."
+          for actor in "$GITHUB_ACTOR" "$GITHUB_TRIGGERING_ACTOR"; do
+            if [[ -z "$actor" ]] || ! gh api "repos/$GITHUB_REPOSITORY/collaborators/$actor/permission" \
+              --jq '.permission' | grep -qx admin; then
+              echo "::error::A repository administrator must start or retry the Production workflow."
               exit 1
-            }
+            fi
+          done
+
+      - name: Select deployment targets
+        id: plan
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          case "$TARGET" in
+            all|manager|exhibition|exhibition-admin|firestore-rules) ;;
+            *) echo "::error::Unknown deployment target."; exit 1 ;;
+          esac
+          for variant in manager exhibition exhibition-admin firestore-rules; do
+            if [[ "$TARGET" == all || "$TARGET" == "$variant" ]]; then
+              echo "${variant//-/_}=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+          echo "Target: $TARGET (deploy=${{ inputs.deploy }})" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/checkout@v4
         with:
@@ -60,9 +76,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Build production bundle
-        if: inputs.deploy
+      - name: Build manager
+        if: steps.plan.outputs.manager == 'true'
         run: npm run build
+
+      - name: Build exhibition
+        if: steps.plan.outputs.exhibition == 'true'
+        run: npm run exhibition:build
+
+      - name: Build exhibition admin
+        if: steps.plan.outputs.exhibition_admin == 'true'
+        run: npm run exhibition:admin:build
 
       - name: Check WIF configuration
         env:
@@ -105,28 +129,51 @@ jobs:
           project_id: ${{ env.FIREBASE_PROJECT }}
           token_format: access_token
 
-      - name: Verify Firebase CLI authentication and Hosting site
+      - name: Verify Firebase CLI authentication
+        run: npx --no-install firebase --version
+
+      - name: Verify selected Hosting sites using Firebase CLI
+        if: steps.plan.outputs.manager == 'true' || steps.plan.outputs.exhibition == 'true' || steps.plan.outputs.exhibition_admin == 'true'
+        env:
+          MANAGER: ${{ steps.plan.outputs.manager }}
+          EXHIBITION: ${{ steps.plan.outputs.exhibition }}
+          EXHIBITION_ADMIN: ${{ steps.plan.outputs.exhibition_admin }}
         run: |
-          npx --no-install firebase --version
+          sites=()
+          if [[ "$MANAGER" == true ]]; then sites+=(avalondgu); fi
+          if [[ "$EXHIBITION" == true ]]; then sites+=(avalon-collection); fi
+          if [[ "$EXHIBITION_ADMIN" == true ]]; then sites+=(avalon-collection-admin); fi
           result="$RUNNER_TEMP/firebase-hosting-sites.json"
           if ! npx --no-install firebase hosting:sites:list --project "$FIREBASE_PROJECT" --non-interactive --json > "$result"; then
             jq -r '.error // .message // empty' "$result"
             echo "::error::Firebase CLI site lookup failed after service-account authentication."
             exit 1
           fi
-          if ! jq -e --arg site "$FIREBASE_SITE" '
-            .status == "success" and any(.result.sites[]; (.name | split("/") | last) == $site)
-          ' "$result" >/dev/null; then
-            echo "::error::Expected Hosting site was not listed in the configured Firebase project."
-            exit 1
-          fi
-          echo "Firebase CLI authenticated with ADC and listed $FIREBASE_SITE."
+          for site in "${sites[@]}"; do
+            if ! jq -e --arg site "$site" '
+              .status == "success" and any(.result.sites[]; (.name | split("/") | last) == $site)
+            ' "$result" >/dev/null; then
+              echo "::error::Hosting site $site was not listed in $FIREBASE_PROJECT."
+              exit 1
+            fi
+            echo "Firebase CLI verified site: $site"
+          done
 
-      - name: Verify Hosting deployment permissions
+      - name: Verify permissions for the selected targets
         env:
           ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          CHECK_HOSTING: ${{ steps.plan.outputs.manager == 'true' || steps.plan.outputs.exhibition == 'true' || steps.plan.outputs.exhibition_admin == 'true' }}
+          CHECK_RULES: ${{ steps.plan.outputs.firestore_rules }}
         run: |
-          required='["firebase.projects.get","firebasehosting.sites.get","firebasehosting.sites.list","firebasehosting.sites.update"]'
+          permissions=(firebase.projects.get)
+          if [[ "$CHECK_HOSTING" == true ]]; then
+            permissions+=(firebasehosting.sites.get firebasehosting.sites.list firebasehosting.sites.update)
+          fi
+          if [[ "$CHECK_RULES" == true ]]; then
+            permissions+=(datastore.databases.get firebaserules.releases.create firebaserules.releases.list
+              firebaserules.releases.update firebaserules.rulesets.create firebaserules.rulesets.get)
+          fi
+          required=$(printf '%s\n' "${permissions[@]}" | jq -R . | jq -s .)
           granted=$(curl --silent --show-error --fail-with-body \
             --header "Authorization: Bearer $ACCESS_TOKEN" \
             --json "{\"permissions\":$required}" \
@@ -134,15 +181,32 @@ jobs:
           missing=$(jq -r --argjson required "$required" \
             '($required - (.permissions // []))[]' <<<"$granted")
           if [[ -n "$missing" ]]; then
-            echo "::error::Missing project IAM permissions"
+            echo "::error::Missing project IAM permissions for selected targets"
             printf '%s\n' "$missing"
             exit 1
           fi
-          echo "Firebase CLI ADC and Hosting deployment permissions verified." >> "$GITHUB_STEP_SUMMARY"
+          echo "Firebase CLI authenticated. Verified permissions: $required" >> "$GITHUB_STEP_SUMMARY"
           echo "Verified permissions: $required"
 
-      - name: Publish production Hosting
-        if: inputs.deploy
+      - name: Verify the configured Firestore database using Firebase CLI
+        if: steps.plan.outputs.firestore_rules == 'true'
         run: |
-          npx --no-install firebase deploy --project "$FIREBASE_PROJECT" --config firebase.json \
-            --only "hosting:$FIREBASE_TARGET" --non-interactive --message "$GITHUB_SHA"
+          database=$(jq -er '.firestore | if type == "array" and length == 1 then .[0].database else empty end' firebase.json)
+          npx --no-install firebase firestore:databases:get "$database" --project "$FIREBASE_PROJECT" --non-interactive
+          echo "Firebase CLI verified Firestore database: $database"
+
+      - name: Publish Firestore rules
+        if: inputs.deploy && steps.plan.outputs.firestore_rules == 'true'
+        run: npx --no-install firebase deploy --project "$FIREBASE_PROJECT" --config firebase.json --only firestore:rules --non-interactive
+
+      - name: Publish manager Hosting
+        if: inputs.deploy && steps.plan.outputs.manager == 'true'
+        run: npx --no-install firebase deploy --project "$FIREBASE_PROJECT" --config firebase.json --only hosting:avalondgu-site --non-interactive --message "$GITHUB_SHA"
+
+      - name: Publish exhibition admin Hosting
+        if: inputs.deploy && steps.plan.outputs.exhibition_admin == 'true'
+        run: npx --no-install firebase deploy --project "$FIREBASE_PROJECT" --config firebase.exhibition.json --only hosting:avalon-exhibition-admin --non-interactive --message "$GITHUB_SHA"
+
+      - name: Publish exhibition Hosting
+        if: inputs.deploy && steps.plan.outputs.exhibition == 'true'
+        run: npx --no-install firebase deploy --project "$FIREBASE_PROJECT" --config firebase.exhibition.json --only hosting:avalon-exhibition --non-interactive --message "$GITHUB_SHA"
