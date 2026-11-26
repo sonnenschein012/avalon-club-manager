@@ -48,8 +48,13 @@ function pack(pins, width, fromRight) {
   };
 }
 
+/**
+ * @param {readonly string[]} rankedIds
+ * @param {number} width
+ * @returns {{ slots: { id: string, size: number, rotation: number, radius: number, x: number, y: number }[], height: number, labelWidth: number }}
+ */
 export function placeRankedPins(rankedIds, width) {
-  if (!rankedIds.length || width <= 0) return { slots: [], height: 0 };
+  if (!rankedIds.length || width <= 0) return { slots: [], height: 0, labelWidth: 0 };
 
   const scale = Math.max(0, Math.min(1, (width - 360) / 640));
   const minSize = 66 + 26 * scale;

@@ -7,8 +7,11 @@ describe('exhibition pin layout', () => {
   it('keeps mobile pins large and packs a dozen pins into a shorter display', () => {
     const { slots, height } = placeRankedPins(ids, 360);
     expect(slots.map(pin => pin.id)).toEqual(ids);
-    expect(slots[0].size).toBeGreaterThan(slots[11].size);
-    expect(slots[11].size).toBeGreaterThanOrEqual(66);
+    const [largest] = slots;
+    const smallest = slots.at(-1);
+    if (!largest || !smallest) throw new Error('Expected twelve placed pins.');
+    expect(largest.size).toBeGreaterThan(smallest.size);
+    expect(smallest.size).toBeGreaterThanOrEqual(66);
     expect(height).toBeLessThan(600);
     expect(placeRankedPins(ids, 360)).toEqual({ slots, height, labelWidth: 84 });
   });
