@@ -1,9 +1,9 @@
 import games from './games.json';
 import { placeRankedPins } from './pin-layout.js';
 import { exhibitionGames, rankedCompanions, rankedGames } from '../src/domain/exhibition/collection';
-import { exhibitionCopy, exhibitionImageUrl } from '../src/domain/exhibition/presentation';
+import { exhibitionCopy, exhibitionImageUrl, isExhibitionImageUpload } from '../src/domain/exhibition/presentation';
 import {
-  exhibitionErrorMessage, findExhibitionMembers, loadExhibitionView, loadExhibitionDescriptions,
+  exhibitionErrorMessage, findExhibitionMembers, loadExhibitionView, loadExhibitionPinImage,
   watchExhibitionPublication, watchExhibitionCopy, watchExhibitionAppearance,
 } from './data';
 
@@ -15,7 +15,11 @@ const week = ['일', '월', '화', '수', '목', '금', '토'];
 const esc = value => String(value).replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const icon = id => '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#'+id+'"/></svg>';
-const asset = id => exhibitionImageUrl(profile?.images?.[id]) ?? pinAssets[`./assets/pins/${id}.webp`];
+const artworkKey = id => profile?.data.gamePins?.[id] ?? id;
+const imageKey = id => Object.hasOwn(profile.images, id) ? id : artworkKey(id);
+const imageSetting = id => profile.images[imageKey(id)];
+const asset = id => exhibitionImageUrl(imageSetting(id)) ?? pinAssets[`./assets/pins/${artworkKey(id)}.webp`];
+const pinDescription = id => profile.descriptions[id] ?? profile.descriptions[artworkKey(id)] ?? gameItem(id)?.motif ?? '';
 const dayOf = date => week[new Date(date + 'T12:00:00Z').getUTCDay()];
 const dateText = date => {
   const [year, month, day] = date.split('-');
@@ -38,6 +42,35 @@ let publicationSubscription;
 let appearanceSubscription;
 let pinAppearance;
 let publicationTimer;
+const imageLoads = new Map();
+const imageObserver = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
+  for (const { isIntersecting, target } of entries) {
+    if (!isIntersecting) continue;
+    imageObserver.unobserve(target);
+    loadPinArtwork(target);
+  }
+}, { rootMargin: '180px' }) : undefined;
+
+function loadPinArtwork(element) {
+  const { imageKey: key, imageUpload: version } = element.dataset;
+  if (!imageLoads.has(version)) {
+    const pending = loadExhibitionPinImage(key, version).catch(() => undefined);
+    imageLoads.set(version, pending);
+    void pending.then(url => { if (!url && imageLoads.get(version) === pending) imageLoads.delete(version); });
+  }
+  void imageLoads.get(version).then(url => {
+    if (url && element.isConnected && profile?.images[key] === version) element.src = url;
+  });
+}
+
+function artworkMarkup(id, alt, lazy = false) {
+  const setting = imageSetting(id);
+  const src = asset(id);
+  const upload = isExhibitionImageUpload(setting)
+    ? ' data-image-key="'+esc(imageKey(id))+'" data-image-upload="'+esc(setting)+'"' : '';
+  return '<img'+(src ? ' src="'+esc(src)+'"' : '')+upload+' alt="'+esc(alt)+'" draggable="false"'
+    +(lazy ? ' loading="lazy"' : '')+' decoding="async">';
+}
 
 function intro(){
   const title = copy.collectionTitle;
@@ -47,16 +80,17 @@ function intro(){
 }
 
 function gameItem(id) {
-  if (Object.hasOwn(games, id)) return games[id];
+  const key = artworkKey(id);
   const title = profile?.data.gameTitles?.[id] ?? profile?.gameTitles?.[id];
+  if (Object.hasOwn(games, key)) return title ? { ...games[key], ko: title } : games[key];
   return /^game-[a-f0-9]+$/.test(id) && title ? { ko: title, pending: true, unillustrated: true } : null;
 }
 
 function scatterPin(id) {
   const item=gameItem(id);
-  const custom = exhibitionImageUrl(profile.images[id]);
+  const custom = exhibitionImageUrl(imageSetting(id)) || isExhibitionImageUpload(imageSetting(id));
   const art=item.pending&&!custom?'<span class="pending-art" aria-hidden="true"><span>+</span><small>'+
-    esc(item.unillustrated ? copy.fallbackPin : '제작 예정')+'</small></span>':'<img src="'+esc(asset(id))+'" alt="" draggable="false" loading="lazy" decoding="async">';
+    esc(item.unillustrated ? copy.fallbackPin : '제작 예정')+'</small></span>':artworkMarkup(id, '', true);
   return '<button type="button" class="pin scatter-pin'+(item.pending?' pending-pin':'')+'" aria-label="'+esc(item.ko)+' 함께한 날 보기" data-pin="'+id+'">'+art+'<span class="pin-label">'+esc(item.ko)+'</span></button>';
 }
 function showEntry(){
@@ -104,7 +138,8 @@ function makeState(route) {
   const companions = rankedCompanions(scopedDays);
   const selected = exhibitionGames(profile.data, { date, companionId: companion?.profileId });
   const gameOrder = profile.gameOrder.filter(id => selected.has(id));
-  const pin = selected.has(route.pin) && gameItem(route.pin) ? route.pin : '';
+  const requestedPin = selected.has(route.pin) ? route.pin : gameOrder.find(id => artworkKey(id) === route.pin);
+  const pin = requestedPin && gameItem(requestedPin) ? requestedPin : '';
   return { id: route.id, date, dates, companions, companion, gameOrder, pin };
 }
 
@@ -139,13 +174,13 @@ function collection(state) {
   const companionHeading = state.companion
     ? `<div class="companion-filter">${esc(state.companion.name)}님과 함께한 게임<a class="text-control" href="${formPath(state.id, state.date)}">${esc(copy.clearFilter)}</a></div>`
     : '';
-  const empty = '<p class="blank">'+esc(state.companion ? copy.noCompanionGames :
+  const empty = '<p class="collection-empty" role="status">'+esc(state.companion ? copy.noCompanionGames :
     state.date ? copy.noDayGames : copy.noGames)+'</p>';
   return intro()+companionHeading+
     `<section class="works scatter-field ranked-layout${showLabels ? '' : ' labels-off'}" aria-label="보드게임 컬렉션">${pins || empty}</section>`+
-    '<div class="board-caption"><p class="caption-hint">'+icon('hand')+
+    (pins ? '<div class="board-caption"><p class="caption-hint">'+icon('hand')+
     '<span>'+esc(copy.pinHint)+'</span></p><button class="text-control label-toggle" type="button" aria-pressed="'+
-    showLabels+'">'+esc(copy.labelsToggle)+'<span aria-hidden="true" class="label-switch"></span></button></div>'+archive(state);
+    showLabels+'">'+esc(copy.labelsToggle)+'<span aria-hidden="true" class="label-switch"></span></button></div>' : '')+archive(state);
 }
 
 let laidOutField;
@@ -186,30 +221,19 @@ function renderObject(state) {
   const links = dates.map(date =>
     `<a href="${formPath(state.id, date, companionId)}" aria-label="${esc(dateText(date))} 세션 기록 보기"><time datetime="${esc(date)}">${esc(date.replaceAll('-', '. '))}</time><span class="day">${dayOf(date)}요일</span>${icon('book')}</a>`,
   ).join('');
-  const image = asset(state.pin);
+  const image = asset(state.pin) || isExhibitionImageUpload(imageSetting(state.pin));
   const artwork = image ?
-    '<div class="pin-field"><img src="'+esc(image)+'" alt="'+esc(item.ko)+'의 에나멜 핀"></div>' : '';
+    '<div class="pin-field">'+artworkMarkup(state.pin, item.ko+'의 에나멜 핀')+'</div>' : '';
   const englishTitle = item.en ? '<p lang="en" class="object-en">'+esc(item.en)+'</p>' : '';
-  const descriptionText = profile.descriptions[state.pin] || item.motif || '';
+  const descriptionText = pinDescription(state.pin);
   const text = '<p class="object-text"'+(descriptionText ? '' : ' hidden')+'>'+esc(descriptionText)+'</p>';
   objectDialog.innerHTML = '<div class="object-sheet'+(image?'':' text-only')+'"><button type="button" class="modal-close" data-close aria-label="핀 상세 닫기">'+
     icon('close')+'</button>'+artwork+'<div class="object-info">'+englishTitle+'<h2 id="object-title">'+esc(item.ko)+
     '</h2>'+text+'<div class="detail-dates"><h3>'+esc(copy.archiveTitle)+'</h3>'+links+'</div></div></div>';
   if (!objectDialog.open) objectDialog.showModal();
+  objectDialog.querySelectorAll('[data-image-upload]').forEach(loadPinArtwork);
   document.body.classList.add('dialog-open');
   lastOpenPin = state.pin;
-  const description = objectDialog.querySelector('.object-text');
-  if (!description) return;
-  const displayedProfile = profile;
-  const previousDescriptions = profile.descriptions;
-  void loadExhibitionDescriptions().then(descriptions => {
-    if (profile !== displayedProfile || profile.descriptions !== previousDescriptions || !objectDialog.open || !description.isConnected) return;
-    profile.descriptions = descriptions;
-    description.textContent = descriptions[state.pin] || item.motif || '';
-    description.hidden = !description.textContent;
-  }).catch(() => {
-    // Keep the description bundled with the last successfully loaded record.
-  });
 }
 
 function render(state, replaceRecord = false) {
@@ -222,9 +246,12 @@ function render(state, replaceRecord = false) {
   const onCompanion = document.activeElement?.matches('.archive-people a');
   if (objectDialog.open && !state.pin) objectDialog.close();
   if (changed) {
+    imageObserver?.disconnect();
     main.innerHTML = collection(state);
     layoutPins();
     baseKey = nextKey;
+    main.querySelectorAll('[data-image-upload]').forEach(element =>
+      imageObserver ? imageObserver.observe(element) : loadPinArtwork(element));
     if (!replaceRecord) {
       if (onDate) main.querySelector('.archive-date[aria-current]')?.focus({ preventScroll: true });
       else if (onCompanion) main.querySelector('.archive-people a[aria-current]')?.focus({ preventScroll: true });
@@ -244,13 +271,27 @@ function render(state, replaceRecord = false) {
   current = state;
 }
 
-function resetEntry(message = '') {
+function showEntryError(message, retryRoute) {
+  document.getElementById('entry-error').textContent = message;
+  if (!retryRoute || message === copy.unpublished) return;
+  const form = document.getElementById('name-form');
+  if (retryRoute !== 'search') form.dataset.retryRecord = retryRoute;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'text-control entry-retry';
+  button.textContent = '다시 시도';
+  document.getElementById('name-matches').append(button);
+}
+
+function resetEntry(message = '', retryRoute) {
   entryRequest++;
   publicationSubscription?.();
   publicationSubscription = undefined;
   appearanceSubscription?.();
   appearanceSubscription = undefined;
   pinAppearance = undefined;
+  imageObserver?.disconnect();
+  imageLoads.clear();
   clearTimeout(publicationTimer);
   profile = current = laidOutField = undefined;
   baseKey = lastOpenPin = '';
@@ -259,7 +300,7 @@ function resetEntry(message = '') {
   document.body.classList.remove('dialog-open');
   footer.hidden = true;
   showEntry();
-  document.getElementById('entry-error').textContent = message;
+  showEntryError(message, retryRoute);
   window.scrollTo(0, 0);
 }
 
@@ -267,7 +308,7 @@ function updatePinDescriptions(descriptions) {
   profile.descriptions = descriptions;
   const description = objectDialog.querySelector('.object-text');
   if (objectDialog.open && description && current?.pin) {
-    description.textContent = descriptions[current.pin] || gameItem(current.pin)?.motif || '';
+    description.textContent = pinDescription(current.pin);
     description.hidden = !description.textContent;
   }
 }
@@ -292,7 +333,7 @@ function watchPublishedRecord() {
     if (!update) return showUnavailable();
     trackPublicationEnd(update.endsAt);
     if (update.id !== profile?.generationId) {
-      void refresh(true);
+      void refresh(update);
     } else updatePinDescriptions(pinAppearance?.descriptions ?? update.descriptions);
   });
   appearanceSubscription = watchExhibitionAppearance(update => {
@@ -306,14 +347,14 @@ function watchPublishedRecord() {
   });
 }
 
-async function refresh(revalidate = false) {
+async function refresh(published) {
   const route = readRoute();
   if (!route) {
     resetEntry();
     return;
   }
   const previous = profile?.id === route.id ? profile : undefined;
-  if (previous && !revalidate) {
+  if (previous && !published) {
     render(makeState(route));
     return;
   }
@@ -322,10 +363,10 @@ async function refresh(revalidate = false) {
     if (objectDialog.open) objectDialog.close();
     document.body.classList.remove('dialog-open');
     footer.hidden = true;
-    main.innerHTML = '<p class="blank" role="status">'+esc(copy.loadingRecord)+'</p>';
+    main.innerHTML = '<p class="record-loading" role="status"><span class="record-loading-indicator" aria-hidden="true"></span><span data-loading-copy>'+esc(copy.loadingRecord)+'</span></p>';
   }
   try {
-    const { record: data, generationId, descriptions, images = {}, gameTitles = {}, endsAt } = await loadExhibitionView(route.id);
+    const { record: data, generationId, descriptions, images = {}, gameTitles = {}, endsAt } = await loadExhibitionView(route.id, published);
     const latestRoute = readRoute();
     if (request !== entryRequest || latestRoute?.id !== route.id) return;
     if (!data) {
@@ -348,7 +389,7 @@ async function refresh(revalidate = false) {
     if (request !== entryRequest) return;
     if (previous) return;
     history.replaceState(null, '', '#');
-    resetEntry(exhibitionErrorMessage(error));
+    resetEntry(exhibitionErrorMessage(error, copy), formPath(route.id, route.date, route.companionId, route.pin));
   }
 }
 
@@ -372,6 +413,8 @@ document.addEventListener('submit', async event => {
   const error = document.getElementById('entry-error');
   const choices = document.getElementById('name-matches');
   const input = document.getElementById('member-name');
+  delete input.form.dataset.retryRecord;
+  main.querySelector('.entry-retry')?.remove();
   choices.replaceChildren();
   error.textContent = copy.checkingName;
   try {
@@ -395,7 +438,7 @@ document.addEventListener('submit', async event => {
       choices.append(button);
     });
   } catch (cause) {
-    if (request === entryRequest) error.textContent = exhibitionErrorMessage(cause);
+    if (request === entryRequest) showEntryError(exhibitionErrorMessage(cause, copy), 'search');
   }
 });
 
@@ -406,6 +449,12 @@ document.getElementById('skip').addEventListener('click', event => {
 document.addEventListener('click', event => {
   const el = event.target instanceof Element ? event.target : null;
   if (!el) return;
+  if (el.closest('.entry-retry')) {
+    const form = main.querySelector('#name-form');
+    if (form.dataset.retryRecord) navigate(form.dataset.retryRecord);
+    else form.requestSubmit();
+    return;
+  }
   const member = el.closest('[data-member]');
   if (member) { navigate(formPath(member.dataset.member)); return; }
   if (el.closest('[data-close]')) { closeObject(); return; }
@@ -436,15 +485,16 @@ objectDialog.addEventListener('click', event => {
 });
 window.addEventListener('popstate', () => { void refresh(); });
 window.addEventListener('hashchange', () => { void refresh(); });
-window.addEventListener('focus', () => {
-  if (profile && profile.id === readRoute()?.id) void refresh(true);
-});
 watchExhibitionCopy(value => {
   const updated = { ...exhibitionCopy, ...value };
   if (JSON.stringify(copy) === JSON.stringify(updated)) return;
   copy = updated;
   const route = readRoute();
   if (profile && route?.id === profile.id) render(makeState(route), true);
-  else updateEntryCopy();
+  else {
+    updateEntryCopy();
+    const loading = main.querySelector('[data-loading-copy]');
+    if (loading) loading.textContent = copy.loadingRecord;
+  }
 });
 void refresh();

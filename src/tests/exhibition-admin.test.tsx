@@ -1,6 +1,6 @@
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { exhibitionCopy, exhibitionPins } from '../domain/exhibition/presentation';
+import { exhibitionCopy, exhibitionPins, fallbackExhibitionPin } from '../domain/exhibition/presentation';
 
 const mocks = vi.hoisted(() => ({
   authChanged: undefined as ((user: { uid: string; email: string }) => void) | undefined,
@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   save: vi.fn(),
   retry: vi.fn(),
   request: vi.fn(),
+  prepareImage: vi.fn(),
 }));
 
 vi.mock('firebase/auth', () => ({
@@ -28,6 +29,7 @@ vi.mock('firebase/firestore', () => ({
 vi.mock('../lib/firebase', () => ({
   auth: {}, db: {}, checkAdminStatus: mocks.admin, logout: vi.fn(), signInWithGoogle: vi.fn(),
 }));
+vi.mock('../../exhibition-admin/pinImage', () => ({ preparePinImage: mocks.prepareImage }));
 vi.mock('../services/exhibitionSyncService', () => ({
   loadExhibitionSettings: async () => ({ enabled: false, period: { kind: 'all' }, gameMapping: [] }),
   loadExhibitionStatus: async () => ({ pending: false, unmappedGameIds: ['source-game'], missingMemberIds: [] }),
@@ -106,7 +108,8 @@ describe('exhibition admin settings', () => {
     }
     await act(async () => { change('input[type="search"]', 'Avalon'); });
     await act(async () => { clickButton('The Resistance: Avalon'); });
-    expect(document.querySelector('textarea')).toHaveProperty('value', exhibitionPins.avalon?.motif);
+    const gameKey = fallbackExhibitionPin('source-game');
+    expect(document.querySelector('textarea')).toHaveProperty('placeholder', exhibitionPins.avalon?.motif);
     await act(async () => {
       change('textarea', ' 새 핀 설명 ');
       change('input[inputmode="url"]', 'https://example.com/pin.webp');
@@ -121,16 +124,32 @@ describe('exhibition admin settings', () => {
       enabled: true, visibility: 'temporary', schedule: { start: '2026-11-25', end: '2026-11-27' },
       period: { kind: 'range', start: '2025-09-01', end: '2028-02-29', semesters: { start: '2025-2', end: '2027-2' } },
       gameMapping: [],
-      descriptions: { avalon: '새 핀 설명' },
-      images: { avalon: 'https://example.com/pin.webp' },
+      descriptions: { [gameKey]: '새 핀 설명' },
+      images: { [gameKey]: 'https://example.com/pin.webp' },
       copy: { entryTitle: '우리의 컬렉션' },
     });
     expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Exhibit text');
     expect(window.location.hash).toBe('#copy');
     expect(document.body.textContent).toContain('Changes saved. Updating records');
     expect(mocks.request).toHaveBeenCalledOnce();
-    await act(async () => { clickButton('Sync records'); });
+    await act(async () => { clickButton('Publish records'); });
     expect(mocks.retry).toHaveBeenCalledOnce();
     expect(mocks.request).toHaveBeenCalledTimes(2);
+    await act(async () => { press('[role="tab"][id$="-trigger-pins"]', 'Enter'); });
+    const upload = {
+      version: 'upload:00000000-0000-4000-8000-000000000001',
+      bytes: new Uint8Array([0, 1, 2]),
+      preview: 'data:image/webp;base64,AAEC',
+    };
+    mocks.prepareImage.mockResolvedValueOnce(upload);
+    await act(async () => {
+      const fileInput = document.querySelector<HTMLInputElement>('#pin-file')!;
+      Object.defineProperty(fileInput, 'files', { value: [new File(['image'], 'pin.png', { type: 'image/png' })] });
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(document.querySelector('img[alt="The Resistance: Avalon pin"]')?.getAttribute('src')).toBe(upload.preview);
+    await act(async () => { clickButton('Save changes'); });
+    expect(mocks.save).toHaveBeenLastCalledWith('avalon', expect.objectContaining({ images: { [gameKey]: upload.version } }),
+      new Map([[gameKey, upload]]));
   }, 15_000);
 });

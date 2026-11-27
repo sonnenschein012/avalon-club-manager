@@ -1,4 +1,4 @@
-import React, { Component, useState, useEffect } from 'react';
+import React, { Component, useState, useEffect, useRef } from 'react';
 import { auth, signInWithGoogle, logout, checkAdminStatus, initializeDemoSession, isDemoMode } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { Users, Dices, FileSpreadsheet, History, ChevronRight, PlayCircle, Settings, BarChart, CalendarClock, ShieldCheck } from 'lucide-react';
@@ -10,6 +10,7 @@ import { Toaster, toast } from 'sonner';
 import AvalonLogo from './components/AvalonLogo';
 import Sidebar from './components/Sidebar';
 import LoginGate from './components/LoginGate';
+import type { ExhibitionSyncError, ExhibitionSyncStatus } from './services/exhibitionSyncService';
 
 // Route-level chunks keep infrequently visited screens out of the initial download.
 const MembersPage = React.lazy(() => import('./components/MembersPage'));
@@ -82,6 +83,9 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [exhibitionPhase, setExhibitionPhase] = useState<ExhibitionSyncStatus>('idle');
+  const [exhibitionFailure, setExhibitionFailure] = useState<ExhibitionSyncError | null>(null);
+  const requestExhibition = useRef<(() => void) | undefined>(undefined);
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -94,14 +98,18 @@ export default function App() {
     let stop: (() => void) | undefined;
     void import('./services/exhibitionSyncService').then(({ watchExhibitionSync }) => {
       if (cancelled) return;
-      stop = watchExhibitionSync(() => {}, failure => {
+      const watcher = watchExhibitionSync(setExhibitionPhase, failure => {
+        setExhibitionFailure(failure);
         if (failure) console.warn('Exhibition synchronization failed.', failure);
-      }, 'sources').stop;
+      }, 'sources');
+      stop = watcher.stop;
+      requestExhibition.current = watcher.request;
     }).catch(error => {
       if (!cancelled) console.warn('Exhibition synchronization could not start.', error);
     });
     return () => {
       cancelled = true;
+      requestExhibition.current = undefined;
       stop?.();
     };
   }, [exhibitionOperatorId]);
@@ -328,7 +336,8 @@ export default function App() {
       <Route path="/interview/:token" element={<PublicInterviewPage />} />
       <Route path="/settings" element={
         <PrivateRoute user={user} isAdmin={isAdmin}>
-          {protectedLayout(<SettingsPage isAdminModeActive={isAdminModeActive} setIsAdminModeActive={setIsAdminModeActive} isMasterAdmin={isMasterAdmin} />)}
+          {protectedLayout(<SettingsPage isAdminModeActive={isAdminModeActive} setIsAdminModeActive={setIsAdminModeActive} isMasterAdmin={isMasterAdmin}
+            exhibition={{ phase: exhibitionPhase, failure: exhibitionFailure, request: () => requestExhibition.current?.() }} />)}
         </PrivateRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />

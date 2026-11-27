@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Timestamp } from 'firebase/firestore';
 import { buildExhibitionCollection, exhibitionGames, exhibitionNameKey, rankedGames, rankedCompanions } from './collection';
 import type { Session } from '../../types';
+import { fallbackExhibitionPin } from './presentation';
 
 const members = [
   { id: 'a', name: '가람' },
@@ -10,6 +11,7 @@ const members = [
   { id: 'inactive', name: '미참석' },
 ];
 const mapping = new Map([['x', 'pin-x'], ['alias-x', 'pin-x'], ['y', 'pin-y'], ['z', 'pin-z']]);
+const game = fallbackExhibitionPin;
 
 function session(id: string, utc: string, groups: [string[], string[]][]): Session {
   return {
@@ -46,16 +48,16 @@ describe('exhibition collection', () => {
     expect(result.unmappedGameIds).toEqual(['unknown']);
     expect(result.missingMemberIds).toEqual(['missing']);
     expect(exhibitionGames(profile, { date: '2026-09-01' })).toEqual(
-      new Map([['pin-x', ['2026-09-01']], ['pin-y', ['2026-09-01']], ['pin-z', ['2026-09-01']]]),
+      new Map([[game('x'), ['2026-09-01']], [game('alias-x'), ['2026-09-01']], [game('y'), ['2026-09-01']], [game('z'), ['2026-09-01']]]),
     );
     expect(exhibitionGames(profile, { date: '2026-09-01', companionId: b.profileId })).toEqual(
-      new Map([['pin-x', ['2026-09-01']]]),
+      new Map([[game('x'), ['2026-09-01']], [game('alias-x'), ['2026-09-01']]]),
     );
     expect(exhibitionGames(profile, { date: '2026-09-01', companionId: c.profileId })).toEqual(
-      new Map([['pin-y', ['2026-09-01']], ['pin-z', ['2026-09-01']]]),
+      new Map([[game('y'), ['2026-09-01']], [game('z'), ['2026-09-01']]]),
     );
     expect(exhibitionGames(profile, { companionId: b.profileId })).toEqual(
-      new Map([['pin-x', ['2026-09-02', '2026-09-01']], ['pin-y', ['2026-09-02']]]),
+      new Map([[game('x'), ['2026-09-02', '2026-09-01']], [game('y'), ['2026-09-02']], [game('alias-x'), ['2026-09-01']]]),
     );
   });
 
@@ -68,7 +70,7 @@ describe('exhibition collection', () => {
     if (!firstId) throw new Error('Expected a profile');
     expect(next.names.get(key)!.candidates[0]?.profileId).toBe(firstId);
     expect(first.profiles.get(firstId)!.days.map(day => day.date)).toEqual(['2026-09-02', '2026-09-01']);
-    expect(next.profiles.get(firstId)!.days[1]?.gameIds).toEqual(['pin-y', 'pin-z']);
+    expect(next.profiles.get(firstId)!.days[1]?.gameIds).toEqual([game('y'), game('z')]);
   });
 
   it('reuses the club semester rollover through February', async () => {
@@ -80,11 +82,11 @@ describe('exhibition collection', () => {
     const candidate = result.names.get(await nameKey('가람'))?.candidates[0];
     if (!candidate) throw new Error('Expected a semester profile');
     const { profileId } = candidate;
-    expect(exhibitionGames(result.profiles.get(profileId)!)).toEqual(new Map([['pin-x', ['2027-02-28']]]));
+    expect(exhibitionGames(result.profiles.get(profileId)!)).toEqual(new Map([[game('x'), ['2027-02-28']]]));
   });
 });
 
-it('counts each pin per group and ranks shared groups across sessions', async () => {
+it('counts games that reuse artwork separately and ranks shared groups across sessions', async () => {
   const records = [
     session('alpha', '2026-09-02T05:00:00Z', [[['a', 'b'], ['x', 'alias-x']], [['a', 'c'], ['y']]]),
     session('beta', '2026-09-02T06:00:00Z', [[['a', 'b'], ['x']]]),
@@ -94,7 +96,8 @@ it('counts each pin per group and ranks shared groups across sessions', async ()
   const id = result.names.get(key)?.candidates[0]?.profileId;
   if (!id) throw new Error('Expected profile');
   const profile = result.profiles.get(id)!;
-  expect(profile.days[0]?.gameCounts).toEqual({ 'pin-x': 2, 'pin-y': 1 });
-  expect(rankedGames(profile.days, new Map())).toEqual(['pin-x', 'pin-y']);
+  expect(profile.days[0]?.gameCounts).toEqual({ [game('x')]: 2, [game('alias-x')]: 1, [game('y')]: 1 });
+  expect(profile.gamePins).toMatchObject({ [game('x')]: 'pin-x', [game('alias-x')]: 'pin-x' });
+  expect(rankedGames(profile.days, new Map())).toEqual([game('x'), game('alias-x'), game('y')]);
   expect(rankedCompanions(profile.days).map(person => person.count)).toEqual([2, 1]);
 });

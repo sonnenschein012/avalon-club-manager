@@ -1,22 +1,27 @@
 import { readFileSync } from 'node:fs';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const profileId = 'a'.repeat(64);
 const companionId = 'b'.repeat(64);
 const otherId = 'c'.repeat(64);
 const api = vi.hoisted(() => ({
-  find: vi.fn(), load: vi.fn(), descriptions: vi.fn(), generation: '1',
+  find: vi.fn(), load: vi.fn(), generation: '1',
+  loadImage: vi.fn(),
+  appearance: undefined as ((notice: { descriptions: Record<string, string>; images: Record<string, string> }) => void) | undefined,
   publication: undefined as ((notice: { id: string; descriptions: Record<string, string> }) => void) | undefined,
-  copy: undefined as ((notice: { entryTitle: string; edition: string; namePrompt: string }) => void) | undefined,
+  copy: undefined as ((notice: Record<string, string>) => void) | undefined,
 }));
 vi.mock('../../exhibition/data', () => ({
   findExhibitionMembers: api.find,
   loadExhibitionView: async (id: string) => ({ record: await api.load(id), generationId: api.generation, descriptions: { avalon: '전시 설명' } }),
-  loadExhibitionDescriptions: api.descriptions,
+  loadExhibitionPinImage: api.loadImage,
   watchExhibitionPublication: (callback: typeof api.publication) => { api.publication = callback; return () => {}; },
   watchExhibitionCopy: (callback: typeof api.copy) => { api.copy = callback; return () => {}; },
-  watchExhibitionAppearance: () => () => {},
-  exhibitionErrorMessage: () => '전시 조회 실패',
+  watchExhibitionAppearance: (callback: typeof api.appearance) => {
+    api.appearance = callback;
+    return () => { api.appearance = undefined; };
+  },
+  exhibitionErrorMessage: (_error: unknown, copy: { loadError: string }) => copy.loadError,
 }));
 
 const click = (selector: string) => document.querySelector<HTMLElement>(selector)?.click();
@@ -38,18 +43,16 @@ describe('public exhibition view', () => {
     await import('../../exhibition/main.js');
   });
 
-  beforeEach(() => { api.descriptions.mockResolvedValue({}); });
-
   afterEach(() => {
     history.replaceState(null, '', '#');
     window.dispatchEvent(new Event('hashchange'));
     vi.resetAllMocks();
     api.generation = '1';
+    api.copy?.({});
   });
 
   it('opens a name match, filters same-group games and returns focus from a pin', async () => {
     api.find.mockResolvedValue([{ profileId }]);
-    api.descriptions.mockResolvedValue({ avalon: '새 전시 설명' });
     api.load.mockResolvedValue({ name: '합성 가람', days: [
       { date: '2026-09-02', gameIds: ['avalon', 'dixit'], gameCounts: { avalon: 2, dixit: 1 },
         companions: [{ profileId: companionId, name: '합성 한결', gameIds: ['avalon'] },
@@ -78,7 +81,8 @@ describe('public exhibition view', () => {
     expect(document.querySelector('dialog')?.open).toBe(true);
     expect(document.querySelector('#object-title')?.textContent).toBe('레지스탕스 아발론');
     expect(document.querySelector('.object-text')?.textContent).toBe('전시 설명');
-    await vi.waitFor(() => expect(document.querySelector('.object-text')?.textContent).toBe('새 전시 설명'));
+    api.appearance?.({ descriptions: { avalon: '새 전시 설명' }, images: {} });
+    expect(document.querySelector('.object-text')?.textContent).toBe('새 전시 설명');
     click('[data-close]');
     await vi.waitFor(() => expect(document.querySelector('dialog')?.open).toBe(false));
     expect(document.activeElement?.getAttribute('data-pin')).toBe('avalon');
@@ -100,8 +104,12 @@ describe('public exhibition view', () => {
     click('#name-matches button:nth-child(2)');
     await vi.waitFor(() => expect(document.querySelector('#entry-error')?.textContent).toContain('찾지 못했습니다'));
     expect(api.load).toHaveBeenCalledWith(otherId);
+    api.copy?.({ loadError: '전시 조회 실패' });
     submitName('다시 시도');
     await vi.waitFor(() => expect(document.querySelector('#entry-error')?.textContent).toBe('전시 조회 실패'));
+    api.find.mockResolvedValueOnce([]);
+    click('.entry-retry');
+    await vi.waitFor(() => expect(document.querySelector('#entry-error')?.textContent).toContain('찾지 못했습니다'));
   });
 
   it('shows the name and date for a recorded game without a pin image', async () => {

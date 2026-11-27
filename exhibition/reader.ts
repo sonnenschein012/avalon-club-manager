@@ -1,6 +1,13 @@
-import { doc, getDocFromServer, onSnapshot, type DocumentData, type Firestore } from 'firebase/firestore';
+import { Bytes, doc, getDocFromServer, onSnapshot, type DocumentData, type Firestore } from 'firebase/firestore';
 import { exhibitionNameKey, type ExhibitionProfile } from '../src/domain/exhibition/collection';
-import { exhibitionCopy, type ExhibitionCopy } from '../src/domain/exhibition/presentation';
+import { exhibitionCopy, isExhibitionImageUpload, type ExhibitionCopy } from '../src/domain/exhibition/presentation';
+
+export async function readUploadedPinImage(db: Firestore, exhibitionId: string, key: string, version: string) {
+  if (!isExhibitionImageUpload(version)) return;
+  const snapshot = await getDocFromServer(doc(db, 'exhibitionPinAppearance', exhibitionId, 'exhibitionImages', key));
+  const data = snapshot.data();
+  if (data?.version === version && data.bytes instanceof Bytes) return 'data:image/webp;base64,' + data.bytes.toBase64();
+}
 
 export class ExhibitionUnavailable extends Error {}
 
@@ -21,6 +28,8 @@ function publication(data: DocumentData | undefined): Publication | null {
 export function createExhibitionReader(db: Firestore, exhibitionId: string) {
   const access = doc(db, 'exhibitionAccess', exhibitionId);
   const appearance = doc(db, 'exhibitionPinAppearance', exhibitionId);
+  let nameLookup: { publication: Publication; candidates: Set<string>; expiresAt: number } | undefined;
+  let lookupRequest = 0;
 
   async function generation(): Promise<Publication> {
     try {
@@ -32,8 +41,8 @@ export function createExhibitionReader(db: Firestore, exhibitionId: string) {
     throw new ExhibitionUnavailable('현재 볼 수 있는 기록이 없습니다.');
   }
 
-  async function readActive<T>(kind: 'names' | 'profiles', id: string) {
-    const first = await generation();
+  async function readActive<T>(kind: 'names' | 'profiles', id: string, published?: Publication) {
+    const first = published ?? await generation();
     try {
       const snapshot = await getDocFromServer(doc(access, 'generations', first.id, kind, id));
       return { ...first, record: (snapshot.data() as T | undefined) ?? null, generationId: first.id };
@@ -47,18 +56,28 @@ export function createExhibitionReader(db: Firestore, exhibitionId: string) {
   }
 
   async function findExhibitionMembers(name: string) {
+    const request = ++lookupRequest;
+    nameLookup = undefined;
     const id = await exhibitionNameKey(name);
     if (!id) return [];
-    const result = await readActive<{ candidates: { profileId: string; yearLabel?: string }[] }>('names', id);
-    return result.record?.candidates ?? [];
+    const { record, ...published } =
+      await readActive<{ candidates: { profileId: string; yearLabel?: string }[] }>('names', id);
+    const candidates = record?.candidates ?? [];
+    if (request === lookupRequest && candidates.length) {
+      nameLookup = { publication: published, candidates: new Set(candidates.map(candidate => candidate.profileId)),
+        expiresAt: Math.min(Date.now() + 30_000, published.endsAt ?? Infinity) };
+    }
+    return candidates;
   }
 
-  const loadExhibitionView = (id: string) => readActive<ExhibitionProfile>('profiles', id);
+  function loadExhibitionView(id: string, published?: Publication) {
+    const lookup = nameLookup;
+    nameLookup = undefined;
+    const recent = lookup && lookup.candidates.has(id) && Date.now() < lookup.expiresAt ? lookup.publication : undefined;
+    return readActive<ExhibitionProfile>('profiles', id, published ?? recent);
+  }
+
   const loadExhibitionProfile = async (id: string) => (await loadExhibitionView(id)).record;
-  const loadExhibitionDescriptions = async () => {
-    const snapshot = await getDocFromServer(appearance);
-    return (snapshot.data()?.descriptions ?? (await generation()).descriptions) as Record<string, string>;
-  };
   const watchExhibitionPublication = (change: (update: Publication | null) => void) =>
     onSnapshot(access, { includeMetadataChanges: true }, snapshot => {
       if (!snapshot.metadata.fromCache) change(publication(snapshot.data()));
@@ -78,7 +97,8 @@ export function createExhibitionReader(db: Firestore, exhibitionId: string) {
       if (!snapshot.metadata.fromCache && data) change({ descriptions: data.descriptions ?? {}, images: data.images ?? {} });
     }, () => {});
   return {
-    findExhibitionMembers, loadExhibitionProfile, loadExhibitionView, loadExhibitionDescriptions,
+    findExhibitionMembers, loadExhibitionProfile, loadExhibitionView,
+    loadExhibitionPinImage: (key: string, version: string) => readUploadedPinImage(db, exhibitionId, key, version),
     watchExhibitionPublication, watchExhibitionCopy, watchExhibitionAppearance,
   };
 }

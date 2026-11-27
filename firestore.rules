@@ -392,11 +392,13 @@ service cloud.firestore {
         request.resource.data.revision is int && request.resource.data.revision > 0 &&
         (id == 'progress' || (request.resource.data.revision ==
           (resource == null ? 1 : resource.data.revision + 1) &&
-          // An old browser must not republish a generation without game titles.
-          (resource == null || !resource.data.get('fingerprint', '').matches('projection-v[23]:.*') ||
+          // An older browser must not overwrite a newer projection format.
+          (resource == null || !resource.data.get('fingerprint', '').matches('projection-v[234]:.*') ||
             (resource.data.get('fingerprint', '').matches('projection-v2:.*') &&
               request.resource.data.get('fingerprint', '').matches('projection-v2:[a-f0-9]{64}')) ||
-            request.resource.data.get('fingerprint', '').matches('projection-v3:[a-f0-9]{64}'))));
+            (!resource.data.get('fingerprint', '').matches('projection-v4:.*') &&
+              request.resource.data.get('fingerprint', '').matches('projection-v3:[a-f0-9]{64}')) ||
+            request.resource.data.get('fingerprint', '').matches('projection-v4:[a-f0-9]{64}'))));
     }
 
     match /exhibitionSettings/{id} {
@@ -449,6 +451,20 @@ service cloud.firestore {
       allow create, update: if isAdmin() &&
         request.resource.data.keys().hasOnly(['descriptions', 'images']) &&
         request.resource.data.descriptions is map && request.resource.data.images is map;
+
+      match /exhibitionImages/{key} {
+        allow get: if isAdmin() || (
+          exhibitionIsOpen(get(/databases/$(database)/documents/exhibitionAccess/$(id)).data) &&
+          get(/databases/$(database)/documents/exhibitionPinAppearance/$(id)).data.images.get(key, '') == resource.data.version
+        );
+        allow create, update: if isAdmin() &&
+          request.resource.data.keys().hasOnly(['version', 'bytes']) &&
+          request.resource.data.version is string && request.resource.data.version.matches('upload:[a-f0-9-]{36}') &&
+          request.resource.data.bytes is bytes && request.resource.data.bytes.size() > 0 &&
+          request.resource.data.bytes.size() <= 196608 &&
+          getAfter(/databases/$(database)/documents/exhibitionPinAppearance/$(id)).data.images.get(key, '') == request.resource.data.version;
+        allow delete: if isAdmin();
+      }
     }
 
     function keepsExhibitionWindow(id, data) {
@@ -494,9 +510,9 @@ service cloud.firestore {
       allow create, update: if isAdmin() && (
         (kind == 'names' && request.resource.data.keys().hasOnly(['candidates']) &&
           request.resource.data.candidates is list) ||
-        (kind == 'profiles' && request.resource.data.keys().hasOnly(['name', 'days', 'gameTitles']) &&
+        (kind == 'profiles' && request.resource.data.keys().hasOnly(['name', 'days', 'gameTitles', 'gamePins']) &&
           request.resource.data.name is string && request.resource.data.days is list &&
-          request.resource.data.get('gameTitles', {}) is map)
+          request.resource.data.get('gameTitles', {}) is map && request.resource.data.get('gamePins', {}) is map)
       );
     }
 

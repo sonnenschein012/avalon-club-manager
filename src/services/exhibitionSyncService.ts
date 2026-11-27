@@ -1,13 +1,13 @@
 import { withFirestoreDeadline } from '../lib/firestoreDeadline';
 import {
-  collection, deleteField, doc, getDocFromServer, getDocsFromServer, limit, onSnapshot, query, where, runTransaction,
+  Bytes, collection, deleteField, doc, getDocFromServer, getDocsFromServer, limit, onSnapshot, query, where, runTransaction,
   serverTimestamp, Timestamp, writeBatch, type DocumentData, type DocumentReference,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { commitBatchesInChunks } from '../lib/chunkBatch';
 import { buildExhibitionCollection, type ExhibitionPeriod } from '../domain/exhibition/collection';
 import {
-  defaultExhibitionPin, exhibitionPins, exhibitionPublicationWindow, fallbackExhibitionPin,
+  defaultExhibitionPin, exhibitionPins, exhibitionPublicationWindow, fallbackExhibitionPin, isExhibitionImageUpload, maxExhibitionImageBytes,
   type ExhibitionCopy, type ExhibitionSchedule, type ExhibitionVisibility,
 } from '../domain/exhibition/presentation';
 import { normalizeStudentYear } from '../domain/members/memberIdentity';
@@ -31,9 +31,10 @@ export async function loadExhibitionSettings(exhibitionId: string) {
 }
 
 export async function loadExhibitionStatus(exhibitionId: string) {
-  const [source, progress, diagnostics] = await Promise.all([
+  const [source, progress, diagnostics, access] = await Promise.all([
     getDocFromServer(exhibitionRevisionRef()), getDocFromServer(doc(db, 'exhibitionSync', 'progress')),
     getDocFromServer(doc(db, 'exhibitionDiagnostics', exhibitionId)),
+    getDocFromServer(doc(db, 'exhibitionAccess', exhibitionId)),
   ]);
   return {
     pending: Number(source.data()?.revision ?? 0) > Number(progress.data()?.revision ?? 0),
@@ -41,6 +42,9 @@ export async function loadExhibitionStatus(exhibitionId: string) {
     missingMemberIds: (diagnostics.data()?.missingMemberIds ?? []) as string[],
     lastSyncedAt: (diagnostics.data()?.syncedAt as Timestamp | undefined)?.toDate(),
     profileCount: diagnostics.data()?.profileCount as number | undefined,
+    published: access.data()?.enabled === true && Boolean(access.data()?.generationId),
+    startsAt: (access.data()?.startsAt as Timestamp | undefined)?.toDate(),
+    endsAt: (access.data()?.endsAt as Timestamp | undefined)?.toDate(),
   };
 }
 
@@ -67,9 +71,11 @@ function recordSettingsKey(settings: ExhibitionSettings) {
   ]);
 }
 
-export async function saveExhibitionSettings(exhibitionId: string, settings: ExhibitionSettings) {
+export async function saveExhibitionSettings(exhibitionId: string, settings: ExhibitionSettings,
+  uploads: ReadonlyMap<string, { version: string; bytes: Uint8Array }> = new Map()) {
   const access = doc(db, 'exhibitionAccess', exhibitionId);
   const settingsRef = doc(db, 'exhibitionSettings', exhibitionId);
+  const appearance = doc(db, 'exhibitionPinAppearance', exhibitionId);
   const window = publicationWindow(settings);
   return withFirestoreDeadline(signal => runTransaction(db, async transaction => {
     const [saved, current] = await Promise.all([transaction.get(settingsRef), transaction.get(access)]);
@@ -79,9 +85,26 @@ export async function saveExhibitionSettings(exhibitionId: string, settings: Exh
       recordSettingsKey(previous) !== recordSettingsKey(settings));
     transaction.set(settingsRef, settings);
     if (settings.copy) transaction.set(doc(db, 'exhibitionCopy', exhibitionId), { copy: settings.copy });
-    transaction.set(doc(db, 'exhibitionPinAppearance', exhibitionId), {
+    transaction.set(appearance, {
       descriptions: settings.descriptions ?? {}, images: settings.images ?? {},
     });
+    for (const [key, value] of Object.entries(settings.images ?? {})) {
+      if (isExhibitionImageUpload(value) && previous?.images?.[key] !== value && uploads.get(key)?.version !== value) {
+        throw new Error('The saved image changed. Reload the exhibition settings.');
+      }
+    }
+    for (const [key, upload] of uploads) {
+      if (settings.images?.[key] !== upload.version) continue;
+      if (!isExhibitionImageUpload(upload.version) || !upload.bytes.length || upload.bytes.length > maxExhibitionImageBytes) {
+        throw new Error('Invalid exhibition image');
+      }
+      transaction.set(doc(appearance, 'exhibitionImages', key), { version: upload.version, bytes: Bytes.fromUint8Array(upload.bytes) });
+    }
+    for (const [key, value] of Object.entries(previous?.images ?? {})) {
+      if (isExhibitionImageUpload(value) && !isExhibitionImageUpload(settings.images?.[key])) {
+        transaction.delete(doc(appearance, 'exhibitionImages', key));
+      }
+    }
     if (!settings.enabled) {
       transaction.set(access, { enabled: false, generationId: '' });
     } else if (current.data()?.enabled && current.data()?.generationId) {
@@ -186,7 +209,7 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
   }));
   const defaults = new Map(games.map(({ id, title }) => [id, defaultExhibitionPin(id, title)]));
   const payload = new TextEncoder().encode(JSON.stringify([sessions, members, games]));
-  const fingerprint = 'projection-v3:' + Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', payload)),
+  const fingerprint = 'projection-v4:' + Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', payload)),
     byte => byte.toString(16).padStart(2, '0')).join('');
   reportStep('변경 확인');
   signal.throwIfAborted();
@@ -234,10 +257,10 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
       if (Object.hasOwn(exhibitionPins, pinId) || pinId === fallbackExhibitionPin(sourceId)) mapping.set(sourceId, pinId);
       else mapping.delete(sourceId);
     }
-    const titlesWithoutPins = new Map(games.filter(game => game.title.trim() && !excluded.has(game.id))
+    const titlesBySourceId = new Map(games.filter(game => game.title.trim() && !excluded.has(game.id))
       .map(({ id, title }) => [id, title.trim()]));
     const result = await buildExhibitionCollection(snapshot.id, period, sessions, members,
-      mapping, titlesWithoutPins);
+      mapping, titlesBySourceId);
     const access = doc(db, 'exhibitionAccess', snapshot.id);
     operations.push({ ref: doc(access, 'generations', generationId), data: { revision } });
     for (const kind of ['names', 'profiles'] as const) {

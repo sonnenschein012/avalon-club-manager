@@ -199,6 +199,10 @@ jobs:
         if: inputs.deploy && steps.plan.outputs.firestore_rules == 'true'
         run: npx --no-install firebase deploy --project "$FIREBASE_PROJECT" --config firebase.json --only firestore:rules --non-interactive
 
+      - name: Publish exhibition Hosting
+        if: inputs.deploy && steps.plan.outputs.exhibition == 'true'
+        run: npx --no-install firebase deploy --project "$FIREBASE_PROJECT" --config firebase.exhibition.json --only hosting:avalon-exhibition --non-interactive --message "$GITHUB_SHA"
+
       - name: Publish manager Hosting
         if: inputs.deploy && steps.plan.outputs.manager == 'true'
         run: npx --no-install firebase deploy --project "$FIREBASE_PROJECT" --config firebase.json --only hosting:avalondgu-site --non-interactive --message "$GITHUB_SHA"
@@ -206,7 +210,3 @@ jobs:
       - name: Publish exhibition admin Hosting
         if: inputs.deploy && steps.plan.outputs.exhibition_admin == 'true'
         run: npx --no-install firebase deploy --project "$FIREBASE_PROJECT" --config firebase.exhibition.json --only hosting:avalon-exhibition-admin --non-interactive --message "$GITHUB_SHA"
-
-      - name: Publish exhibition Hosting
-        if: inputs.deploy && steps.plan.outputs.exhibition == 'true'
-        run: npx --no-install firebase deploy --project "$FIREBASE_PROJECT" --config firebase.exhibition.json --only hosting:avalon-exhibition --non-interactive --message "$GITHUB_SHA"

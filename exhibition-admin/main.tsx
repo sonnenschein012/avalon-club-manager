@@ -10,8 +10,10 @@ import {
 } from '../src/services/exhibitionSyncService';
 import {
   defaultExhibitionPin, exhibitionCopy, exhibitionImageUrl, exhibitionPins, exhibitionPublicationWindow,
-  fallbackExhibitionPin, normalizeExhibitionGameTitle, type ExhibitionCopy, type ExhibitionVisibility,
+  fallbackExhibitionPin, isExhibitionImageUpload, normalizeExhibitionGameTitle, type ExhibitionCopy, type ExhibitionVisibility,
 } from '../src/domain/exhibition/presentation';
+import { readUploadedPinImage } from '../exhibition/reader';
+import { preparePinImage, type PreparedPinImage } from './pinImage';
 import { DateRange } from './DateRange';
 import gameTitles from './gameTitles.json';
 import { Alert, AlertDescription } from './ui/alert';
@@ -106,14 +108,16 @@ function SemesterField({ label, value, onChange }: { label: string; value: strin
   </div>;
 }
 
-function PinEditor({ games, mapping, descriptions, images, onMapping, onDescription, onImage }: {
+function PinEditor({ games, mapping, descriptions, images, uploads, onMapping, onDescription, onImage, onFile }: {
   games: GameChoice[];
   mapping: Map<string, string>;
   descriptions: Record<string, string>;
   images: Record<string, string>;
-  onMapping: (id: string, pin: string) => void;
+  uploads: ReadonlyMap<string, PreparedPinImage>;
+  onMapping: (id: string, pin: string | undefined) => void;
   onDescription: (pin: string, text: string) => void;
   onImage: (pin: string, text: string) => void;
+  onFile: (pin: string, file: File) => void;
 }) {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<GameChoice>();
@@ -121,9 +125,23 @@ function PinEditor({ games, mapping, descriptions, images, onMapping, onDescript
   const query = normalizeExhibitionGameTitle(search);
   const matches = query ? games.filter(game => game.searchTitles.some(title => title.includes(query)))
     .sort((a, b) => Number(b.searchTitles.includes(query)) - Number(a.searchTitles.includes(query))) : [];
+  const gameKey = selected ? fallbackExhibitionPin(selected.id) : '';
   const pin = selected ? mapping.get(selected.id) ?? selected.defaultPin : '';
-  const image = exhibitionImageUrl(images[pin]) || pinAssets[`../exhibition/assets/pins/${pin}.webp`] as string | undefined;
-  const sharedPin = Object.hasOwn(exhibitionPins, pin);
+  const imageKey = images[gameKey]?.trim() ? gameKey : pin;
+  const imageConfig = images[imageKey];
+  const draft = uploads.get(imageKey);
+  const [preview, setPreview] = useState<{ version: string; image: string }>();
+  useEffect(() => {
+    if (!imageConfig || !isExhibitionImageUpload(imageConfig) || draft?.version === imageConfig) return;
+    let active = true;
+    void readUploadedPinImage(db, exhibitionId, imageKey, imageConfig).then(image => {
+      if (active && image) setPreview({ version: imageConfig, image });
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [imageConfig, imageKey, draft]);
+  const image = (draft && draft.version === imageConfig ? draft.preview : undefined)
+    ?? (preview && preview.version === imageConfig ? preview.image : undefined)
+    ?? exhibitionImageUrl(imageConfig) ?? pinAssets[`../exhibition/assets/pins/${pin}.webp`] as string | undefined;
 
   return <div className="grid gap-6">
     <div className="grid gap-2">
@@ -145,29 +163,43 @@ function PinEditor({ games, mapping, descriptions, images, onMapping, onDescript
       <div className="grid gap-4">
         <h3 className="text-base font-semibold">{selected.displayName}</h3>
         <div className="grid gap-2">
-          <Label htmlFor="pin-choice">Display pin</Label>
-          <Select value={mapping.get(selected.id) ?? 'auto'}
-            onValueChange={next => onMapping(selected.id, next === 'auto' ? '' : next)}>
-            <SelectTrigger id="pin-choice" className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="auto">Auto · {selected.displayName}</SelectItem>
-              <SelectItem value={fallbackExhibitionPin(selected.id)}>Game-specific pin</SelectItem>
-              {Object.entries(exhibitionPins).map(([id, item]) => <SelectItem key={id} value={id}>{item.en ?? item.ko}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid gap-2">
           <Label htmlFor="pin-description">Pin description</Label>
           <Textarea id="pin-description" rows={4} maxLength={500}
-            value={descriptions[pin] ?? exhibitionPins[pin]?.motif ?? ''} onChange={event => onDescription(pin, event.target.value)} />
+            placeholder={descriptions[pin] ?? exhibitionPins[pin]?.motif ?? ''}
+            value={descriptions[gameKey] ?? ''} onChange={event => onDescription(gameKey, event.target.value)} />
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor="pin-file">Pin image file</Label>
+          <Input id="pin-file" type="file" accept="image/png,image/jpeg,image/webp" onChange={event => {
+            const file = event.currentTarget.files?.[0];
+            event.currentTarget.value = '';
+            if (file) { setBrokenImage(undefined); onFile(gameKey, file); }
+          }} />
+          {isExhibitionImageUpload(images[gameKey]) && <p className="text-sm text-muted-foreground">
+            {uploads.has(gameKey) ? 'Image ready to save.' : 'Uploaded image'}
+            <button type="button" className="ml-2 underline" onClick={() => onImage(gameKey, '')}>Remove</button>
+          </p>}
         </div>
         <div className="grid gap-2">
           <Label htmlFor="pin-image">Custom image URL</Label>
           <Input id="pin-image" inputMode="url" maxLength={400} placeholder="https://"
-            value={images[pin] ?? ''} onChange={event => { setBrokenImage(undefined); onImage(pin, event.target.value); }} />
-          <p className="text-sm text-muted-foreground">{sharedPin
-            ? 'Changes apply to every game using this pin.' : 'Changes apply to this game only.'}</p>
+            value={isExhibitionImageUpload(images[gameKey]) ? '' : images[gameKey] ?? ''}
+            onChange={event => { setBrokenImage(undefined); onImage(gameKey, event.target.value); }} />
         </div>
+        <details className="space-y-2 text-sm">
+          <summary className="cursor-pointer text-muted-foreground">Reuse existing artwork</summary>
+          <Label htmlFor="pin-choice">Artwork source</Label>
+          <Select value={mapping.get(selected.id) === '' ? 'excluded' : mapping.get(selected.id) ?? 'auto'}
+            onValueChange={next => onMapping(selected.id, next === 'auto' ? undefined : next === 'excluded' ? '' : next)}>
+            <SelectTrigger id="pin-choice" className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">Automatic</SelectItem>
+              <SelectItem value={gameKey}>Game-specific artwork only</SelectItem>
+              <SelectItem value="excluded">Exclude this game from the exhibit</SelectItem>
+              {Object.entries(exhibitionPins).map(([id, item]) => <SelectItem key={id} value={id}>{item.en ?? item.ko}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </details>
       </div>
       <Card className="self-start border-dashed bg-muted/50 py-4 shadow-none">
         <CardHeader className="px-4"><CardTitle className="text-sm">Pin preview</CardTitle></CardHeader>
@@ -196,6 +228,8 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
   const [mapping, setMapping] = useState(new Map(initial.gameMapping.map(item => [item.sourceId, item.pinId])));
   const [descriptions, setDescriptions] = useState(initial.descriptions ?? {});
   const [images, setImages] = useState(initial.images ?? {});
+  const [uploads, setUploads] = useState(new Map<string, PreparedPinImage>());
+  const [preparingImage, setPreparingImage] = useState(false);
   const [copy, setCopy] = useState<ExhibitionCopy>(initial.copy ?? {});
   const [sync, setSync] = useState<ExhibitionSyncStatus>('idle');
   const [status, setStatus] = useState<Awaited<ReturnType<typeof loadExhibitionStatus>>>();
@@ -228,7 +262,13 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
       setMessage({ text: 'Check the start and end of the record range.', error: true });
       return;
     }
-    const cleanImages = Object.entries(images).flatMap(([id, value]) => value.trim() ? [[id, exhibitionImageUrl(value.trim())]] as const : []);
+    if (preparingImage) return;
+    if ([...uploads.values()].reduce((sum, upload) => sum + upload.bytes.length, 0) > 6 * 1024 * 1024) {
+      setMessage({ text: 'Save fewer image files at a time.', error: true });
+      return;
+    }
+    const cleanImages = Object.entries(images).flatMap(([id, value]) => value.trim() ?
+      [[id, isExhibitionImageUpload(value) ? value : exhibitionImageUrl(value.trim())]] as const : []);
     if (cleanImages.some(([, url]) => !url)) {
       setMessage({ text: 'Use an HTTPS URL for each custom image.', error: true });
       return;
@@ -248,10 +288,11 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
         ...(visibility === 'temporary' ? { schedule } : {}),
         gameMapping: [...mapping].map(([sourceId, pinId]) => ({ sourceId, pinId })),
         descriptions: savedDescriptions, images: savedImages, copy: savedCopy,
-      });
+      }, ...(uploads.size ? [uploads] as const : []));
       setCopy(savedCopy);
       setDescriptions(savedDescriptions);
       setImages(savedImages);
+      setUploads(new Map());
       setSavedPublication({ visibility, schedule });
       setMessage({ text: 'Changes saved.' });
       if (needsSync) {
@@ -265,12 +306,24 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
     }
   }
 
+  async function selectPinFile(key: string, file: File) {
+    setPreparingImage(true);
+    setMessage(undefined);
+    try {
+      const upload = await preparePinImage(file);
+      setUploads(previous => new Map(previous).set(key, upload));
+      setImages(previous => ({ ...previous, [key]: upload.version }));
+    } catch (error) {
+      setMessage({ text: error instanceof Error ? error.message : 'Could not prepare this image.', error: true });
+    } finally { setPreparingImage(false); }
+  }
+
   async function synchronize() {
     setBusy(true);
     try {
       await retryExhibitionRefresh();
       requestSync.current();
-      setMessage({ text: 'Sync started using saved settings.' });
+      setMessage({ text: 'Publishing records using saved settings.' });
     } catch {
       setMessage({ text: 'Could not start sync. Try again.', error: true });
     } finally {
@@ -285,13 +338,13 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
     : !savedWindow ? 'Private'
       : now < savedWindow.start.getTime() ? 'Scheduled'
         : now >= savedWindow.end.getTime() ? 'Ended' : 'Public · scheduled';
-  const syncLabel = sync === 'syncing' ? 'Syncing records…' : sync === 'error' && status?.pending !== false ? 'Sync failed · retrying'
-    : status?.pending || (sync === 'pending' && !status) ? 'Sync pending'
-    : lastSync ? `Last sync: ${lastSync} KST · ${status?.profileCount ?? 0} collections` : 'No sync recorded';
+  const syncLabel = sync === 'syncing' ? 'Publishing records…' : sync === 'error' && status?.pending !== false ? 'Publication failed · retrying'
+    : status?.pending || (sync === 'pending' && !status) ? 'Publication pending'
+    : lastSync ? `Last published: ${lastSync} KST · ${status?.profileCount ?? 0} collections` : 'No records published yet';
 
   return <div className="grid gap-5">
     {syncFailure && <Alert variant="destructive"><AlertDescription>
-      Record sync: {syncFailure.step} ({syncFailure.code})
+      Record publication: {syncFailure.step} ({syncFailure.code})
     </AlertDescription></Alert>}
     <Card className="gap-0 py-4 shadow-none">
       <CardContent className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-5">
@@ -300,7 +353,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
           <p className="text-sm text-muted-foreground" role="status">{syncLabel}</p>
         </div>
         <Button type="button" variant="outline" disabled={busy || sync === 'syncing'} onClick={() => void synchronize()}>
-          <RefreshCw className={sync === 'syncing' ? 'motion-safe:animate-spin' : undefined} /> Sync records
+          <RefreshCw className={sync === 'syncing' ? 'motion-safe:animate-spin' : undefined} /> Publish records
         </Button>
       </CardContent>
     </Card>
@@ -318,7 +371,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
         <Card className="shadow-none">
           <CardHeader><CardTitle>{sections[section].label}</CardTitle></CardHeader>
           <CardContent>
-            <fieldset disabled={busy} className="min-w-0">
+            <fieldset disabled={busy || preparingImage} className="min-w-0">
               <TabsContent value="publication" className="grid max-w-2xl gap-5">
                 <RadioChoices label="Visibility" items={visibilityOptions} value={visibility} onChange={setVisibility} />
                 {visibility === 'temporary' && <>
@@ -335,14 +388,18 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
                 {periodKind === 'range' && <DateRange startLabel="First record date" endLabel="Last record date" value={dateRange} onChange={setDateRange} />}
               </TabsContent>
               <TabsContent value="pins" forceMount className="data-[state=inactive]:hidden">
-                <PinEditor games={games} mapping={mapping} descriptions={descriptions} images={images}
+                <PinEditor games={games} mapping={mapping} descriptions={descriptions} images={images} uploads={uploads}
                   onMapping={(id, pin) => setMapping(previous => {
                     const next = new Map(previous);
-                    if (pin) next.set(id, pin); else next.delete(id);
+                    if (pin === undefined) next.delete(id); else next.set(id, pin);
                     return next;
                   })}
                   onDescription={(pin, text) => setDescriptions(previous => ({ ...previous, [pin]: text }))}
-                  onImage={(pin, text) => setImages(previous => ({ ...previous, [pin]: text }))} />
+                  onImage={(pin, text) => {
+                    setUploads(previous => { const next = new Map(previous); next.delete(pin); return next; });
+                    setImages(previous => ({ ...previous, [pin]: text }));
+                  }}
+                  onFile={(pin, file) => { if (!preparingImage && !busy) void selectPinFile(pin, file); }} />
               </TabsContent>
               <TabsContent value="copy" className="space-y-6">
                 {copyGroups.map(group => <fieldset key={group.title} className="border-b pb-6 last:border-0 last:pb-0">
@@ -361,7 +418,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
         </Card>
       </Tabs>
       <div className="mt-4 flex flex-wrap items-center gap-3">
-        <Button type="submit" disabled={busy}>Save changes</Button>
+        <Button type="submit" disabled={busy || preparingImage}>{preparingImage ? 'Preparing image…' : 'Save changes'}</Button>
         {message && (message.error
           ? <Alert variant="destructive" className="w-fit"><AlertDescription>{message.text}</AlertDescription></Alert>
           : <p className="text-sm text-muted-foreground" role="status">{message.text}</p>)}

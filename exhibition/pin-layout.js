@@ -4,23 +4,20 @@ const horizontalBias = [.20, .84, .47, .12, .86, .56, .35, .67];
 function findPosition(boxes, width, pin, index, fromRight) {
   const limit = width - pin.halfWidth;
   const preferred = pin.halfWidth + (limit - pin.halfWidth) * horizontalBias[index % horizontalBias.length];
+  // The vertical order stays the same for every horizontal candidate.
+  const intervals = pin.parts.flatMap(part => boxes.map(box => ({
+    x: box.x,
+    reach: part.halfWidth + box.halfWidth,
+    from: box.top - part.bottom,
+    to: box.bottom - part.top,
+  }))).sort((a, b) => a.from - b.from);
   let best;
 
   for (let x = pin.halfWidth; ; x = Math.min(x + 4, limit)) {
-    const blocked = [];
-    for (const part of pin.parts) {
-      for (const box of boxes) {
-        if (Math.abs(x - box.x) < part.halfWidth + box.halfWidth) {
-          blocked.push([box.top - part.bottom, box.bottom - part.top]);
-        }
-      }
-    }
-    blocked.sort((a, b) => a[0] - b[0]);
-
     let y = pin.radius + 3 + (index * 7) % 9;
-    for (const [from, to] of blocked) {
-      if (y <= from) break;
-      y = Math.max(y, to);
+    for (const interval of intervals) {
+      if (y <= interval.from) break;
+      if (Math.abs(x - interval.x) < interval.reach) y = Math.max(y, interval.to);
     }
     const edgeDistance = fromRight ? limit - x : x - pin.halfWidth;
     const score = y + edgeDistance / width * 9 + Math.abs(x - preferred) / width * 3;

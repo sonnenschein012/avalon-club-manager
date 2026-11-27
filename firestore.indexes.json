@@ -36,5 +36,7 @@
       ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    { "collectionGroup": "exhibitionImages", "fieldPath": "bytes", "indexes": [] }
+  ]
 }

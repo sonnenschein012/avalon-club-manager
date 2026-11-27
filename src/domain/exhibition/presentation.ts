@@ -79,3 +79,6 @@ export function exhibitionImageUrl(value: string | undefined) {
     return undefined;
   }
 }
+
+export const maxExhibitionImageBytes = 192 * 1024;
+export const isExhibitionImageUpload = (value: string | undefined) => /^upload:[a-f0-9-]{36}$/.test(value ?? '');

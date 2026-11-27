@@ -2,6 +2,7 @@ import type { Session } from '../../types';
 import { normalizeMemberName } from '../members/memberIdentity';
 import { getSemester } from '../semester/getSemester';
 import { koreaDateKey } from '../shared/koreaDate';
+import { fallbackExhibitionPin } from './presentation';
 
 export type ExhibitionPeriod =
   | { kind: 'all' }
@@ -35,6 +36,7 @@ export interface ExhibitionProfile {
   name: string;
   days: ExhibitionDay[];
   gameTitles?: Record<string, string>;
+  gamePins?: Record<string, string>;
 }
 
 interface NameCandidate {
@@ -78,7 +80,7 @@ export async function buildExhibitionCollection(
   sessions: readonly (Pick<Session, 'groups'> & { date: Session['date'] | string })[],
   members: readonly ExhibitionMember[],
   gameMapping: ReadonlyMap<string, string>,
-  titlesWithoutPins: ReadonlyMap<string, string> = new Map(),
+  titlesBySourceId: ReadonlyMap<string, string> = new Map(),
 ) {
   const namedMembers = members.filter(member => normalizeMemberName(member.name));
   const identities = new Map(await Promise.all(namedMembers.map(async member => [
@@ -88,7 +90,7 @@ export async function buildExhibitionCollection(
   const daysByProfile = new Map<string, Map<string, ExhibitionDay>>();
   const unmappedGameIds = new Set<string>();
   const missingMemberIds = new Set<string>();
-  const fallbackGames = new Map<string, { id: string; title: string }>();
+  const played = new Map<string, { title: string; pin: string | undefined }>();
 
   for (const session of sessions) {
     // Older sessions can store a calendar date string.
@@ -107,16 +109,13 @@ export async function buildExhibitionCollection(
       const gameIds = new Set<string>();
       for (const id of group.gameIds ?? []) {
         const mappedId = gameMapping.get(id);
-        if (mappedId && !mappedId.startsWith('game-')) {
-          gameIds.add(mappedId);
-          continue;
-        }
-        unmappedGameIds.add(id);
-        const title = titlesWithoutPins.get(id);
-        if (!title) continue;
-        const fallback = fallbackGames.get(id) ?? { id: mappedId ?? 'game-' + await documentKey([id]), title };
-        fallbackGames.set(id, fallback);
-        gameIds.add(fallback.id);
+        const pin = mappedId && !mappedId.startsWith('game-') ? mappedId : undefined;
+        if (!pin) unmappedGameIds.add(id);
+        const title = titlesBySourceId.get(id);
+        if (!title && !pin) continue;
+        const gameId = fallbackExhibitionPin(id);
+        played.set(gameId, { title: title ?? '', pin });
+        gameIds.add(gameId);
       }
 
       const playedGames = [...gameIds];
@@ -140,21 +139,26 @@ export async function buildExhibitionCollection(
 
   const profiles = new Map<string, ExhibitionProfile>();
   const names = new Map<string, { candidates: NameCandidate[] }>();
-  const titlesById = new Map([...fallbackGames.values()].map(({ id, title }) => [id, title]));
   for (const member of identities.values()) {
     const days = daysByProfile.get(member.profileId);
     const nameKey = days && await exhibitionNameKey(member.name);
     if (!days || !nameKey) continue;
 
     const sortedDays = [...days.values()].sort((a, b) => b.date.localeCompare(a.date));
-    const gameTitles = Object.fromEntries([...new Set(sortedDays.flatMap(day => day.gameIds))].flatMap(id => {
-      const title = titlesById.get(id);
+    const ids = [...new Set(sortedDays.flatMap(day => day.gameIds))];
+    const gameTitles = Object.fromEntries(ids.flatMap(id => {
+      const title = played.get(id)?.title;
       return title ? [[id, title] as const] : [];
+    }));
+    const gamePins = Object.fromEntries(ids.flatMap(id => {
+      const pin = played.get(id)?.pin;
+      return pin ? [[id, pin] as const] : [];
     }));
     profiles.set(member.profileId, {
       name: member.name,
       days: sortedDays,
       ...(Object.keys(gameTitles).length ? { gameTitles } : {}),
+      ...(Object.keys(gamePins).length ? { gamePins } : {}),
     });
     const match = names.get(nameKey) ?? { candidates: [] };
     match.candidates.push({ profileId: member.profileId, ...(member.yearLabel && /^\d{2}$/u.test(member.yearLabel) ? { yearLabel: member.yearLabel } : {}) });

@@ -5,15 +5,18 @@ import SettingsAdminPanel from './SettingsAdminPanel';
 import SettingsExportPanel from './SettingsExportPanel';
 import SettingsAuditPanel from './SettingsAuditPanel';
 import ConfirmDeleteModal from './ConfirmDeleteModal';
+import SettingsExhibitionPanel, { type ExhibitionPanelProps } from './SettingsExhibitionPanel';
 
 export default function SettingsPage({
   isAdminModeActive,
   setIsAdminModeActive,
   isMasterAdmin,
+  exhibition,
 }: {
   isAdminModeActive: boolean;
   setIsAdminModeActive: (active: boolean) => void;
   isMasterAdmin: boolean;
+  exhibition?: ExhibitionPanelProps;
 }) {
   const adminSettings = useSettingsAdmins(isMasterAdmin);
   const clubExports = useClubExports();
@@ -60,6 +63,7 @@ export default function SettingsPage({
         onCancel={() => adminSettings.setAdminToDelete(null)}
         busy={adminSettings.deletingAdmin}
       />
+      {exhibition && <SettingsExhibitionPanel {...exhibition} />}
       {isMasterAdmin && isAdminModeActive && <SettingsAuditPanel />}
       <SettingsExportPanel {...clubExports} />
     </div>
