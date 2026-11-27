@@ -360,7 +360,7 @@ describe('Firestore Security Rules', () => {
     expect((await getDoc(marker)).data()).toMatchObject({ revision: 2, fingerprint: expect.any(String) });
   });
 
-  it('reconciles operating session changes while the exhibition administrator is open', async () => {
+  it('publishes operating saves without the exhibition admin and supports a manual refresh', async () => {
     if (!testEnv) throw new Error('testEnv not initialized');
     await seedRegularAdmin();
     const operator = testEnv.authenticatedContext('watch-admin', { email: REGULAR_ADMIN_EMAIL }).firestore();
@@ -374,7 +374,7 @@ describe('Firestore Security Rules', () => {
     const initial = (await getDoc(access)).data()?.generationId;
     const marker = doc(operator, 'exhibitionSync/source');
     const errors = vi.fn();
-    const stop = watchExhibitionSync(() => {}, errors);
+    const stop = watchExhibitionSync(() => {}, errors, 'sources');
     try {
       await importSessionRecords([{ id: 'live', date: '2026-09-02', name: '실시간',
         groups: [{ id: 'group', memberIds: ['a'], gameIds: [] }] }]);
@@ -386,13 +386,24 @@ describe('Firestore Security Rules', () => {
         expect((await getDoc(doc(operator, path))).exists()).toBe(true);
       }, { timeout: 10_000, interval: 300 });
       expect((await getDoc(marker)).data()?.fingerprint).toMatch(/^[a-f0-9]{64}$/);
-      const beforeRetry = (await getDoc(access)).data()?.generationId;
+      await updateSessionGroupGames('live', 'group', ['new-game']);
+      await vi.waitFor(async () => {
+        expect((await loadExhibitionStatus('avalon')).unmappedGameIds).toEqual(['new-game']);
+      }, { timeout: 10_000, interval: 300 });
+      expect(errors).not.toHaveBeenCalledWith(expect.objectContaining({ code: expect.any(String) }));
+    } finally { stop(); }
+
+    const beforeRetry = (await getDoc(access)).data()?.generationId;
+    await deleteSessionRecord('live');
+    const stopAdmin = watchExhibitionSync(() => {}, errors, 'requests');
+    try {
       await retryExhibitionRefresh();
       await vi.waitFor(async () => {
         expect((await getDoc(access)).data()?.generationId).not.toBe(beforeRetry);
+        expect((await loadExhibitionStatus('avalon')).unmappedGameIds).toEqual([]);
         expect((await loadExhibitionStatus('avalon')).pending).toBe(false);
       }, { timeout: 10_000, interval: 300 });
-    } finally { stop(); }
+    } finally { stopAdmin(); }
   }, 20_000);
 
   it('keeps a 400-record import atomic without writing to the exhibition', async () => {

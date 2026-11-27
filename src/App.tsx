@@ -86,6 +86,25 @@ export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const isPublicInterviewRoute = location.pathname.startsWith('/interview/');
+  const exhibitionOperatorId = !loading && isAdmin && !isPublicInterviewRoute ? user?.uid : undefined;
+
+  useEffect(() => {
+    if (!exhibitionOperatorId) return;
+    let cancelled = false;
+    let stop: (() => void) | undefined;
+    void import('./services/exhibitionSyncService').then(({ watchExhibitionSync }) => {
+      if (cancelled) return;
+      stop = watchExhibitionSync(() => {}, failure => {
+        if (failure) console.warn('Exhibition synchronization failed.', failure);
+      }, 'sources');
+    }).catch(error => {
+      if (!cancelled) console.warn('Exhibition synchronization could not start.', error);
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [exhibitionOperatorId]);
 
   const handleLogin = async () => {
     if (loggingIn) return;

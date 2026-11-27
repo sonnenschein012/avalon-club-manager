@@ -89,10 +89,17 @@ function syncError(step: string, error: unknown): ExhibitionSyncError {
 }
 
 /** Check the operating records even when no browser was open at the time of a change. */
-export async function refreshExhibitions(reportError?: (failure: ExhibitionSyncError) => void): Promise<boolean> {
+export async function refreshExhibitions(
+  reportError?: (failure: ExhibitionSyncError) => void,
+  lifecycle?: AbortSignal,
+): Promise<boolean> {
   let step: SyncStep = '원본 조회';
   try {
-    return await withFirestoreDeadline(signal => reconcile(signal, value => { step = value; }), 45_000);
+    return await withFirestoreDeadline(deadline => {
+      const signal = lifecycle ? AbortSignal.any([deadline, lifecycle]) : deadline;
+      signal.throwIfAborted();
+      return reconcile(signal, value => { step = value; });
+    }, 45_000);
   } catch (error) {
     reportError?.(syncError(step, error));
     throw error;
@@ -217,8 +224,10 @@ export type ExhibitionSyncStatus = 'idle' | 'syncing' | 'pending' | 'error';
 
 export function watchExhibitionSync(
   setStatus: (status: ExhibitionSyncStatus) => void,
-  setError: (failure: ExhibitionSyncError | null) => void = () => {},
+  setError: (failure: ExhibitionSyncError | null) => void,
+  watch: 'sources' | 'requests',
 ) {
+  const controller = new AbortController();
   let stopped = false;
   let running = false;
   let requested = false;
@@ -240,7 +249,7 @@ export function watchExhibitionSync(
     let done = false;
     let failure: ExhibitionSyncError | undefined;
     try {
-      done = await refreshExhibitions(error => { failure = error; });
+      done = await refreshExhibitions(error => { failure = error; }, controller.signal);
       failures = 0;
     } catch {
       failures++;
@@ -255,7 +264,7 @@ export function watchExhibitionSync(
   }
 
   let monitorFailed = false;
-  const watches = [collection(db, 'sessions'), collection(db, 'members')].map(ref =>
+  const watches = (watch === 'requests' ? [] : [collection(db, 'sessions'), collection(db, 'members')]).map(ref =>
     onSnapshot(ref, { includeMetadataChanges: true }, snapshot => {
       if (!snapshot.metadata.fromCache && !snapshot.metadata.hasPendingWrites) schedule();
     }, error => {
@@ -265,15 +274,17 @@ export function watchExhibitionSync(
       setStatus('error');
       schedule();
     }));
-  watches.push(onSnapshot(exhibitionRevisionRef(), { includeMetadataChanges: true }, snapshot => {
-    if (!snapshot.metadata.fromCache && !snapshot.metadata.hasPendingWrites) schedule();
-  }, error => {
-    monitorFailed = true;
-    if (stopped) return;
-    setError(syncError('동기화 요청 감시', error));
-    setStatus('error');
-    schedule();
-  }));
+  if (watch !== 'sources') {
+    watches.push(onSnapshot(exhibitionRevisionRef(), { includeMetadataChanges: true }, snapshot => {
+      if (!snapshot.metadata.fromCache && !snapshot.metadata.hasPendingWrites) schedule();
+    }, error => {
+      monitorFailed = true;
+      if (stopped) return;
+      setError(syncError('동기화 요청 감시', error));
+      setStatus('error');
+      schedule();
+    }));
+  }
   // A listener can terminate on temporary permission changes. Keep reconciliation
   // available until the administrator reopens the page and attaches new listeners.
   const recovery = setInterval(() => { if (monitorFailed) schedule(); }, 120_000);
@@ -283,6 +294,7 @@ export function watchExhibitionSync(
   schedule();
   return () => {
     stopped = true;
+    controller.abort();
     clearTimeout(retry);
     clearInterval(recovery);
     watches.forEach(unsubscribe => unsubscribe());

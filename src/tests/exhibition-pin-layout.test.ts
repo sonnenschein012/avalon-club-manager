@@ -13,6 +13,10 @@ describe('exhibition pin layout', () => {
     expect(largest.size).toBeGreaterThan(smallest.size);
     expect(smallest.size).toBeGreaterThanOrEqual(66);
     expect(height).toBeLessThan(600);
+    const firstRow = slots.slice(0, 3);
+    expect(firstRow.map(pin => pin.x)).toEqual(firstRow.map(pin => pin.x).sort((a, b) => a - b));
+    expect(Math.max(...firstRow.map(pin => pin.y + pin.radius)) -
+      Math.min(...firstRow.map(pin => pin.y + pin.radius))).toBeLessThanOrEqual(4);
     expect(placeRankedPins(ids, 360)).toEqual({ slots, height, labelWidth: 84 });
   });
 

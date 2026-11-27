@@ -138,7 +138,7 @@ function Workspace({ user }: { user: User }) {
   const [syncError, setSyncError] = useState<ExhibitionSyncError | null>(null);
   const [error, setError] = useState('');
 
-  useEffect(() => watchExhibitionSync(setSync, setSyncError), []);
+  useEffect(() => watchExhibitionSync(setSync, setSyncError, 'requests'), []);
   useEffect(() => {
     let cancelled = false;
     void Promise.all([loadExhibitionSettings(id), getDocsFromServer(collection(db, 'games'))]).then(([settings, games]) => {

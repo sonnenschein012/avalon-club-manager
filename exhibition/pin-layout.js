@@ -49,6 +49,56 @@ function pack(pins, width, fromRight) {
 }
 
 /**
+ * @param {Parameters<typeof pack>[0]} pins
+ * @param {number} width
+ */
+function packRows(pins, width) {
+  const minGap = 4;
+  const maxGap = 24;
+  const rowGap = 2;
+  const rows = [];
+  let row = [];
+  let used = 0;
+  for (const pin of pins) {
+    const pinWidth = 2 * pin.halfWidth;
+    if (row.length && used + minGap * row.length + pinWidth > width) {
+      rows.push(row);
+      row = [];
+      used = 0;
+    }
+    row.push(pin);
+    used += pinWidth;
+  }
+  rows.push(row);
+
+  // Share the last row with the preceding one when a single pin would be stranded.
+  const last = rows.at(-1);
+  const previous = rows.at(-2);
+  if (last.length === 1 && previous?.length > 2) {
+    const pin = previous.at(-1);
+    if (2 * (pin.halfWidth + last[0].halfWidth) + minGap <= width) {
+      last.unshift(previous.pop());
+    }
+  }
+
+  let top = 0;
+  const slots = rows.flatMap((row, rowIndex) => {
+    const occupied = row.reduce((sum, pin) => sum + 2 * pin.halfWidth, 0);
+    const gap = row.length > 1 ? Math.min(maxGap, (width - occupied) / (row.length - 1)) : 0;
+    let left = (width - occupied - gap * (row.length - 1)) / 2;
+    const artBottom = top + 2 * Math.max(...row.map(pin => pin.radius)) + 4;
+    top = artBottom + 35 + rowGap;
+    return row.map(({ id, size, rotation, radius, halfWidth }, column) => {
+      const x = left + halfWidth;
+      left += 2 * halfWidth + gap;
+      const y = artBottom - radius - (rowIndex + column) % 3 * 2;
+      return { id, size, rotation, radius, x, y };
+    });
+  });
+  return { slots, height: Math.ceil(top - rowGap) };
+}
+
+/**
  * @param {readonly string[]} rankedIds
  * @param {number} width
  * @returns {{ slots: { id: string, size: number, rotation: number, radius: number, x: number, y: number }[], height: number, labelWidth: number }}
@@ -85,7 +135,11 @@ export function placeRankedPins(rankedIds, width) {
   }
   const layouts = [pack(pins, width, false), pack(pins, width, true),
     pack(interleaved, width, false), pack(interleaved, width, true)];
-  const best = layouts.reduce((shortest, layout) => layout.height < shortest.height ? layout : shortest);
+  const shortest = layouts.reduce((best, layout) => layout.height < best.height ? layout : best);
+  const rows = packRows(pins, width);
+  // Give the ordered rows a small allowance, with compact packing for narrow
+  // widths where a whole extra row would leave much more empty space.
+  const best = rows.height <= shortest.height * 1.1 ? rows : shortest;
   const byId = new Map(best.slots.map(slot => [slot.id, slot]));
   return { slots: rankedIds.map(id => byId.get(id)), height: best.height, labelWidth };
 }
