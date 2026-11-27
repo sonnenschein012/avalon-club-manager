@@ -132,3 +132,5 @@ Graphify의 검증된 `graphify-out/` 허용 목록만 Git에 공유하며 설�
 운영 전시 관리자는 [AVALON Studio](https://avalon-collection-studio.web.app/)이며 소스는 `exhibition-admin/`에 있습니다. `npm run exhibition:admin:dev`는 로컬 Auth·Firestore Emulator를 사용하고, `npm run exhibition:admin:build`는 `exhibition-admin/dist/`로 빌드합니다. Studio의 **Exhibit text**는 `exhibitionCopy/{exhibitionId}`에 저장합니다. **Games and pins**에서는 게임별 설명, 이미지 URL 또는 파일을 지정할 수 있습니다. 파일은 브라우저에서 최대 512px·192 KiB WebP로 변환하고, `exhibitionPinAppearance/{exhibitionId}`에 버전, 별도 `exhibitionImages/{gameKey}` 문서에 바이트를 같은 트랜잭션으로 저장합니다. 공개 앱은 활성 버전을 화면에 필요할 때 읽습니다. 게임별 설정이 없으면 기존에 연결된 그림과 설명을 사용합니다. 공개 기록이 새로 발행되면 열린 컬렉션은 현재 날짜와 동료 선택에 맞춰 갱신됩니다.
 
 게임 순위는 개인 전체 기록의 조별 플레이 횟수와 최근 플레이일로 한 번 계산합니다. 날짜와 동료 필터는 같은 순위를 유지하며 해당 게임만 보여 줍니다. 동료 목록은 함께한 조 수, 최근 날짜, 서로 다른 공동 게임 수, 가나다순으로 정렬합니다. 과거 전시 데이터는 관리자 화면의 다시 반영을 실행하면 조별 집계로 갱신됩니다.
+
+Studio의 **Needs attention**은 운영 게임 목록에서 전시 제외 게임을 빼고, 저장된 설정으로 실제 사용할 이미지나 설명이 없는 게임을 보여 줍니다. 기존 기본 그림과 설명이 있으면 완료 상태로 보고, 이미지 URL이나 파일 등록 여부는 확인하되 링크 응답을 일괄 검사하지 않습니다. 각 항목은 게임 편집 화면으로 연결되며 현황은 저장에 성공한 뒤 갱신됩니다.

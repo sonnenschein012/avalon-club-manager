@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { collection, getDocsFromServer } from 'firebase/firestore';
-import { ArrowUpRight, Globe2, ImageIcon, LogOut, RefreshCw, Search, Type } from 'lucide-react';
+import { ArrowUpRight, ClipboardList, Globe2, ImageIcon, LogOut, RefreshCw, Search, Type } from 'lucide-react';
 import { auth, checkAdminStatus, db, logout, signInWithGoogle } from '../src/lib/firebase';
 import {
   loadExhibitionSettings, loadExhibitionStatus, retryExhibitionRefresh, saveExhibitionSettings,
@@ -10,11 +10,13 @@ import {
 } from '../src/services/exhibitionSyncService';
 import {
   defaultExhibitionPin, exhibitionCopy, exhibitionImageUrl, exhibitionPins, exhibitionPublicationWindow,
-  fallbackExhibitionPin, isExhibitionImageUpload, normalizeExhibitionGameTitle, type ExhibitionCopy, type ExhibitionVisibility,
+  isExhibitionImageUpload, normalizeExhibitionGameTitle, type ExhibitionCopy, type ExhibitionVisibility,
 } from '../src/domain/exhibition/presentation';
 import { readUploadedPinImage } from '../exhibition/reader';
 import { preparePinImage, type PreparedPinImage } from './pinImage';
 import { DateRange } from './DateRange';
+import { PinWorklist } from './PinWorklist';
+import { contentForGame, type GameChoice, type PinContent } from './pinContent';
 import gameTitles from './gameTitles.json';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -30,12 +32,12 @@ import './style.css';
 
 const exhibitionId = import.meta.env.VITE_EXHIBITION_ID || 'avalon';
 const empty: ExhibitionSettings = { enabled: false, period: { kind: 'all' }, gameMapping: [] };
-const pinAssets = import.meta.glob('../exhibition/assets/pins/*.webp', { eager: true, query: '?url', import: 'default' });
 const englishGameTitles = new Map(Object.entries(gameTitles)
   .map(([title, english]) => [normalizeExhibitionGameTitle(title), english]));
 const sections = {
   publication: { label: 'Publication', icon: Globe2 },
   pins: { label: 'Games and pins', icon: ImageIcon },
+  worklist: { label: 'Needs attention', icon: ClipboardList },
   copy: { label: 'Exhibit text', icon: Type },
 };
 const copyLabels: Record<keyof typeof exhibitionCopy, string> = {
@@ -55,7 +57,6 @@ const copyGroups = [
 ] as const;
 const visibilityOptions = [['public', 'Public'], ['private', 'Private'], ['temporary', 'Scheduled']] as const;
 const periodOptions = [['all', 'All records'], ['semesterRange', 'Semesters'], ['range', 'Dates']] as const;
-type GameChoice = { id: string; displayName: string; searchTitles: string[]; defaultPin: string };
 type Section = keyof typeof sections;
 type EditorPeriod = Exclude<ExhibitionSettings['period'], { kind: 'semester' }> |
   { kind: 'semesterRange'; start: string; end: string };
@@ -108,40 +109,48 @@ function SemesterField({ label, value, onChange }: { label: string; value: strin
   </div>;
 }
 
-function PinEditor({ games, mapping, descriptions, images, uploads, onMapping, onDescription, onImage, onFile }: {
+function PinEditor({ games, selected, active, onSelect, content, uploads, onExclusion, onDescription, onImage, onFile }: {
   games: GameChoice[];
-  mapping: Map<string, string>;
-  descriptions: Record<string, string>;
-  images: Record<string, string>;
+  selected: GameChoice | undefined;
+  active: boolean;
+  onSelect: (game: GameChoice) => void;
+  content: PinContent;
   uploads: ReadonlyMap<string, PreparedPinImage>;
-  onMapping: (id: string, pin: string | undefined) => void;
-  onDescription: (pin: string, text: string) => void;
+  onExclusion: (id: string, excluded: boolean) => void;
+  onDescription: (pin: string, text: string | undefined) => void;
   onImage: (pin: string, text: string) => void;
   onFile: (pin: string, file: File) => void;
 }) {
   const [search, setSearch] = useState('');
-  const [selected, setSelected] = useState<GameChoice>();
   const [brokenImage, setBrokenImage] = useState<string>();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const editHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { if (active && selected) editHeading.current?.focus(); }, [active, selected]);
   const query = normalizeExhibitionGameTitle(search);
   const matches = query ? games.filter(game => game.searchTitles.some(title => title.includes(query)))
     .sort((a, b) => Number(b.searchTitles.includes(query)) - Number(a.searchTitles.includes(query))) : [];
-  const gameKey = selected ? fallbackExhibitionPin(selected.id) : '';
-  const pin = selected ? mapping.get(selected.id) ?? selected.defaultPin : '';
-  const imageKey = images[gameKey]?.trim() ? gameKey : pin;
-  const imageConfig = images[imageKey];
-  const draft = uploads.get(imageKey);
-  const [preview, setPreview] = useState<{ version: string; image: string }>();
+  const pin = selected && contentForGame(selected, content);
+  const draft = pin && uploads.get(pin.imageKey);
+  const imageKey = pin?.imageKey;
+  const imageConfig = pin?.imageConfig;
+  const uploaded = isExhibitionImageUpload(imageConfig);
+  const [preview, setPreview] = useState<{ version: string; image: string | undefined }>();
   useEffect(() => {
-    if (!imageConfig || !isExhibitionImageUpload(imageConfig) || draft?.version === imageConfig) return;
-    let active = true;
+    if (!active || !imageKey || !imageConfig || !uploaded || draft?.version === imageConfig) return;
+    let current = true;
     void readUploadedPinImage(db, exhibitionId, imageKey, imageConfig).then(image => {
-      if (active && image) setPreview({ version: imageConfig, image });
-    }).catch(() => {});
-    return () => { active = false; };
-  }, [imageConfig, imageKey, draft]);
-  const image = (draft && draft.version === imageConfig ? draft.preview : undefined)
-    ?? (preview && preview.version === imageConfig ? preview.image : undefined)
-    ?? exhibitionImageUrl(imageConfig) ?? pinAssets[`../exhibition/assets/pins/${pin}.webp`] as string | undefined;
+      if (current) setPreview({ version: imageConfig, image });
+    }).catch(() => { if (current) setPreview({ version: imageConfig, image: undefined }); });
+    return () => { current = false; };
+  }, [active, imageConfig, imageKey, uploaded, draft]);
+  const draftImage = draft?.version === imageConfig ? draft?.preview : undefined;
+  const savedImage = preview?.version === imageConfig ? preview : undefined;
+  const image = uploaded ? draftImage ?? savedImage?.image : exhibitionImageUrl(imageConfig) ?? pin?.bundledImage;
+  const imageFailed = (image && brokenImage === image) || (uploaded && !draftImage && savedImage && !savedImage.image);
+  const imageStatus = imageFailed ? 'Current image could not load.'
+    : draftImage ? 'New image ready to save.'
+    : uploaded ? 'Uploaded image' : exhibitionImageUrl(imageConfig) ? 'Linked image'
+    : pin?.bundledImage ? 'Default image' : 'No image registered';
 
   return <div className="grid gap-6">
     <div className="grid gap-2">
@@ -155,58 +164,53 @@ function PinEditor({ games, mapping, descriptions, images, uploads, onMapping, o
         {matches.length === 0 && <p className="text-sm text-muted-foreground" role="status">No games found.</p>}
         {matches.slice(0, 12).map(game => <Button type="button" key={game.id}
           variant={selected?.id === game.id ? 'default' : 'outline'} aria-pressed={selected?.id === game.id}
-          onClick={() => { setSelected(game); setBrokenImage(undefined); }}>{game.displayName}</Button>)}
+          onClick={() => { onSelect(game); setBrokenImage(undefined); }}>{game.displayName}</Button>)}
         {matches.length > 12 && <p className="w-full text-sm text-muted-foreground">Type more to narrow the results.</p>}
       </div>}
     </div>
-    {selected && <div className="grid gap-6 min-[680px]:grid-cols-[minmax(0,1fr)_minmax(0,15rem)]">
+    {selected && pin && <div className="grid gap-6 min-[680px]:grid-cols-[minmax(0,1fr)_minmax(0,15rem)]">
       <div className="grid gap-4">
-        <h3 className="text-base font-semibold">{selected.displayName}</h3>
+        <h3 ref={editHeading} tabIndex={-1} className="text-base font-semibold">{selected.displayName}</h3>
         <div className="grid gap-2">
           <Label htmlFor="pin-description">Pin description</Label>
           <Textarea id="pin-description" rows={4} maxLength={500}
-            placeholder={descriptions[pin] ?? exhibitionPins[pin]?.motif ?? ''}
-            value={descriptions[gameKey] ?? ''} onChange={event => onDescription(gameKey, event.target.value)} />
+            value={pin.description} onChange={event => onDescription(pin.gameKey, event.target.value)} />
+          {pin.defaultDescription && pin.description !== pin.defaultDescription &&
+            <Button className="justify-self-start px-0" type="button" variant="link" size="sm"
+              onClick={() => onDescription(pin.gameKey, undefined)}>Restore default description</Button>}
         </div>
         <div className="grid gap-2">
-          <Label htmlFor="pin-file">Pin image file</Label>
-          <Input id="pin-file" type="file" accept="image/png,image/jpeg,image/webp" onChange={event => {
+          <span className="text-sm font-medium">Pin image</span>
+          <p className="text-sm text-muted-foreground" role="status">{imageStatus}</p>
+          <input hidden ref={fileInput} id="pin-file" type="file" accept="image/png,image/jpeg,image/webp" onChange={event => {
             const file = event.currentTarget.files?.[0];
             event.currentTarget.value = '';
-            if (file) { setBrokenImage(undefined); onFile(gameKey, file); }
+            if (file) { setBrokenImage(undefined); onFile(pin.gameKey, file); }
           }} />
-          {isExhibitionImageUpload(images[gameKey]) && <p className="text-sm text-muted-foreground">
-            {uploads.has(gameKey) ? 'Image ready to save.' : 'Uploaded image'}
-            <button type="button" className="ml-2 underline" onClick={() => onImage(gameKey, '')}>Remove</button>
-          </p>}
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={() => fileInput.current?.click()}>
+              {pin.hasImage ? 'Replace image' : 'Choose image'}
+            </Button>
+            {content.images[pin.gameKey] && <Button type="button" variant="ghost" onClick={() => onImage(pin.gameKey, '')}>Remove custom image</Button>}
+          </div>
         </div>
         <div className="grid gap-2">
           <Label htmlFor="pin-image">Custom image URL</Label>
           <Input id="pin-image" inputMode="url" maxLength={400} placeholder="https://"
-            value={isExhibitionImageUpload(images[gameKey]) ? '' : images[gameKey] ?? ''}
-            onChange={event => { setBrokenImage(undefined); onImage(gameKey, event.target.value); }} />
+            value={isExhibitionImageUpload(content.images[pin.gameKey]) ? '' : content.images[pin.gameKey] ?? exhibitionImageUrl(imageConfig) ?? ''}
+            onChange={event => { setBrokenImage(undefined); onImage(pin.gameKey, event.target.value); }} />
         </div>
-        <details className="space-y-2 text-sm">
-          <summary className="cursor-pointer text-muted-foreground">Reuse existing artwork</summary>
-          <Label htmlFor="pin-choice">Artwork source</Label>
-          <Select value={mapping.get(selected.id) === '' ? 'excluded' : mapping.get(selected.id) ?? 'auto'}
-            onValueChange={next => onMapping(selected.id, next === 'auto' ? undefined : next === 'excluded' ? '' : next)}>
-            <SelectTrigger id="pin-choice" className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="auto">Automatic</SelectItem>
-              <SelectItem value={gameKey}>Game-specific artwork only</SelectItem>
-              <SelectItem value="excluded">Exclude this game from the exhibit</SelectItem>
-              {Object.entries(exhibitionPins).map(([id, item]) => <SelectItem key={id} value={id}>{item.en ?? item.ko}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </details>
+        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          <input type="checkbox" checked={pin.excluded} onChange={event => onExclusion(selected.id, event.target.checked)} />
+          Exclude this game from the exhibit
+        </label>
       </div>
       <Card className="self-start border-dashed bg-muted/50 py-4 shadow-none">
         <CardHeader className="px-4"><CardTitle className="text-sm">Pin preview</CardTitle></CardHeader>
         <CardContent className="grid min-h-32 place-items-center px-4 text-center text-sm text-muted-foreground">
           {image && brokenImage !== image ? <img className="max-h-48 w-full object-contain" src={image}
             referrerPolicy="no-referrer" alt={selected.displayName + ' pin'} onError={() => setBrokenImage(image)} />
-            : <p>{image ? 'Image could not load.' : 'No image for this pin.'}</p>}
+            : <p>{imageFailed ? 'Image could not load.' : uploaded ? 'Loading saved image…' : 'No image for this pin.'}</p>}
         </CardContent>
       </Card>
     </div>}
@@ -228,6 +232,8 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
   const [mapping, setMapping] = useState(new Map(initial.gameMapping.map(item => [item.sourceId, item.pinId])));
   const [descriptions, setDescriptions] = useState(initial.descriptions ?? {});
   const [images, setImages] = useState(initial.images ?? {});
+  const [savedPins, setSavedPins] = useState<PinContent>({ mapping, descriptions, images });
+  const [selectedGame, setSelectedGame] = useState<GameChoice>();
   const [uploads, setUploads] = useState(new Map<string, PreparedPinImage>());
   const [preparingImage, setPreparingImage] = useState(false);
   const [copy, setCopy] = useState<ExhibitionCopy>(initial.copy ?? {});
@@ -292,6 +298,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
       setCopy(savedCopy);
       setDescriptions(savedDescriptions);
       setImages(savedImages);
+      setSavedPins({ mapping, descriptions: savedDescriptions, images: savedImages });
       setUploads(new Map());
       setSavedPublication({ visibility, schedule });
       setMessage({ text: 'Changes saved.' });
@@ -342,6 +349,11 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
     : status?.pending || (sync === 'pending' && !status) ? 'Publication pending'
     : lastSync ? `Last published: ${lastSync} KST · ${status?.profileCount ?? 0} collections` : 'No records published yet';
 
+  function openSection(next: Section) {
+    setSection(next);
+    history.replaceState(history.state, '', '#' + next);
+  }
+
   return <div className="grid gap-5">
     {syncFailure && <Alert variant="destructive"><AlertDescription>
       Record publication: {syncFailure.step} ({syncFailure.code})
@@ -358,11 +370,8 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
       </CardContent>
     </Card>
     <form onSubmit={event => void save(event)}>
-      <Tabs value={section} onValueChange={next => {
-        setSection(next as Section);
-        history.replaceState(history.state, '', '#' + next);
-      }} className="gap-4">
-        <TabsList aria-label="Exhibit settings" className="grid h-auto! w-full max-w-md grid-cols-3 gap-1 p-1">
+      <Tabs value={section} onValueChange={next => openSection(next as Section)} className="gap-4">
+        <TabsList aria-label="Exhibit settings" className="grid h-auto! w-full max-w-xl grid-cols-2 gap-1 p-1 sm:grid-cols-4">
           {Object.entries(sections).map(([key, item]) => <TabsTrigger key={key} value={key}
             className="h-10 min-w-0 whitespace-normal px-1.5 text-center leading-tight sm:px-3">
             <item.icon aria-hidden="true" className="hidden sm:block" />{item.label}
@@ -388,18 +397,32 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
                 {periodKind === 'range' && <DateRange startLabel="First record date" endLabel="Last record date" value={dateRange} onChange={setDateRange} />}
               </TabsContent>
               <TabsContent value="pins" forceMount className="data-[state=inactive]:hidden">
-                <PinEditor games={games} mapping={mapping} descriptions={descriptions} images={images} uploads={uploads}
-                  onMapping={(id, pin) => setMapping(previous => {
+                <PinEditor games={games} selected={selectedGame} active={section === 'pins'} onSelect={setSelectedGame}
+                  content={{ mapping, descriptions, images }} uploads={uploads}
+                  onExclusion={(id, excluded) => setMapping(previous => {
                     const next = new Map(previous);
-                    if (pin === undefined) next.delete(id); else next.set(id, pin);
+                    const savedSource = savedPins.mapping.get(id);
+                    if (excluded) next.set(id, '');
+                    else if (savedSource) next.set(id, savedSource);
+                    else next.delete(id);
                     return next;
                   })}
-                  onDescription={(pin, text) => setDescriptions(previous => ({ ...previous, [pin]: text }))}
+                  onDescription={(pin, text) => setDescriptions(previous => {
+                    const next = { ...previous };
+                    if (text === undefined) delete next[pin]; else next[pin] = text;
+                    return next;
+                  })}
                   onImage={(pin, text) => {
                     setUploads(previous => { const next = new Map(previous); next.delete(pin); return next; });
                     setImages(previous => ({ ...previous, [pin]: text }));
                   }}
                   onFile={(pin, file) => { if (!preparingImage && !busy) void selectPinFile(pin, file); }} />
+              </TabsContent>
+              <TabsContent value="worklist" forceMount className="data-[state=inactive]:hidden">
+                <PinWorklist games={games} saved={savedPins} onEdit={game => {
+                  setSelectedGame(game);
+                  openSection('pins');
+                }} />
               </TabsContent>
               <TabsContent value="copy" className="space-y-6">
                 {copyGroups.map(group => <fieldset key={group.title} className="border-b pb-6 last:border-0 last:pb-0">
@@ -418,7 +441,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
         </Card>
       </Tabs>
       <div className="mt-4 flex flex-wrap items-center gap-3">
-        <Button type="submit" disabled={busy || preparingImage}>{preparingImage ? 'Preparing image…' : 'Save changes'}</Button>
+        {section !== 'worklist' && <Button type="submit" disabled={busy || preparingImage}>{preparingImage ? 'Preparing image…' : 'Save changes'}</Button>}
         {message && (message.error
           ? <Alert variant="destructive" className="w-fit"><AlertDescription>{message.text}</AlertDescription></Alert>
           : <p className="text-sm text-muted-foreground" role="status">{message.text}</p>)}

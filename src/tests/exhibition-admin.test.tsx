@@ -24,12 +24,14 @@ vi.mock('firebase/firestore', () => ({
     { id: 'labyrinth-game', data: () => ({ title: '라비린스' }) },
     { id: 'magic-labyrinth-game', data: () => ({ title: '마법의 미로' }) },
     { id: 'hanabi-game', data: () => ({ title: '하나비' }) },
+    { id: 'missing-pin', data: () => ({ title: '미등록 게임' }) },
   ] }),
 }));
 vi.mock('../lib/firebase', () => ({
   auth: {}, db: {}, checkAdminStatus: mocks.admin, logout: vi.fn(), signInWithGoogle: vi.fn(),
 }));
 vi.mock('../../exhibition-admin/pinImage', () => ({ preparePinImage: mocks.prepareImage }));
+vi.mock('../../exhibition/reader', () => ({ readUploadedPinImage: async () => 'data:image/webp;base64,AAEC' }));
 vi.mock('../services/exhibitionSyncService', () => ({
   loadExhibitionSettings: async () => ({ enabled: false, period: { kind: 'all' }, gameMapping: [] }),
   loadExhibitionStatus: async () => ({ pending: false, unmappedGameIds: ['source-game'], missingMemberIds: [] }),
@@ -79,6 +81,21 @@ describe('exhibition admin settings', () => {
     expect(document.querySelector('[role="alert"]')?.textContent).toContain('Admin access is required');
     await act(async () => { mocks.authChanged?.({ uid: 'operator', email: 'operator@example.invalid' }); });
     expect(document.querySelector('h1')?.textContent).toBe('AVALON Studio');
+    await act(async () => { press('[role="tab"][id$="-trigger-worklist"]', 'Enter'); });
+    const worklist = document.querySelector('[role="tabpanel"][id$="-content-worklist"]')!;
+    expect(worklist.textContent).toContain('Missing image');
+    expect(worklist.textContent).toContain('Missing description');
+    expect(worklist.textContent).not.toContain('The Resistance: Avalon');
+    const missingGame = () => [...worklist.querySelectorAll<HTMLButtonElement>('li button')]
+      .find(button => button.textContent?.includes('미등록 게임'));
+    expect(missingGame()?.textContent).toContain('Missing image');
+    expect(missingGame()?.textContent).toContain('Missing description');
+    await act(async () => missingGame()!.click());
+    expect(document.querySelector('h3')?.textContent).toBe('미등록 게임');
+    expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Games and pins');
+    expect(document.querySelector('textarea')).toHaveProperty('value', '');
+    expect(document.querySelector('input[type="file"]')).toHaveProperty('hidden', true);
+    await act(async () => { press('[role="tab"][id$="-trigger-publication"]', 'Enter'); });
     await act(async () => {
       document.querySelector<HTMLButtonElement>('button[role="radio"][value="temporary"]')!.click();
     });
@@ -109,7 +126,10 @@ describe('exhibition admin settings', () => {
     await act(async () => { change('input[type="search"]', 'Avalon'); });
     await act(async () => { clickButton('The Resistance: Avalon'); });
     const gameKey = fallbackExhibitionPin('source-game');
-    expect(document.querySelector('textarea')).toHaveProperty('placeholder', exhibitionPins.avalon?.motif);
+    expect(document.querySelector('textarea')).toHaveProperty('value', exhibitionPins.avalon?.motif);
+    expect(document.querySelector('#pin-choice')).toBeNull();
+    expect(document.body.textContent).toContain('Default image');
+    expect(document.body.textContent).toContain('Replace image');
     await act(async () => {
       change('textarea', ' 새 핀 설명 ');
       change('input[inputmode="url"]', 'https://example.com/pin.webp');
@@ -151,5 +171,19 @@ describe('exhibition admin settings', () => {
     await act(async () => { clickButton('Save changes'); });
     expect(mocks.save).toHaveBeenLastCalledWith('avalon', expect.objectContaining({ images: { [gameKey]: upload.version } }),
       new Map([[gameKey, upload]]));
+    expect(document.body.textContent).toContain('Uploaded image');
+    expect(document.body.textContent).not.toContain('New image ready to save');
+    await act(async () => { press('[role="tab"][id$="-trigger-worklist"]', 'Enter'); });
+    await act(async () => missingGame()!.click());
+    await act(async () => {
+      change('textarea', '이 게임은 같은 색의 카드를 모읍니다.');
+      change('input[inputmode="url"]', 'https://example.com/complete-pin.webp');
+    });
+    await act(async () => { press('[role="tab"][id$="-trigger-worklist"]', 'Enter'); });
+    expect(missingGame()).toBeDefined();
+    await act(async () => missingGame()!.click());
+    await act(async () => { clickButton('Save changes'); });
+    await act(async () => { press('[role="tab"][id$="-trigger-worklist"]', 'Enter'); });
+    expect(missingGame()).toBeUndefined();
   }, 15_000);
 });

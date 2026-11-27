@@ -37,7 +37,7 @@ export default function SettingsExhibitionPanel({ phase, failure, request }: Exh
         </button>
         <a href="https://avalon-collection-studio.web.app/" target="_blank" rel="noopener noreferrer"
           className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-navy transition-colors hover:bg-slate-50">
-          아발론 Studio 열기 <ArrowUpRight size={16} aria-hidden="true" />
+          전시 설정 열기 <ArrowUpRight size={16} aria-hidden="true" />
         </a>
       </div>
     </section>

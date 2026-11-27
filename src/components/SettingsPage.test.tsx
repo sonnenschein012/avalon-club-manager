@@ -59,6 +59,7 @@ describe('SettingsPage audit visibility', () => {
     expect(panel?.textContent).toContain('공개 기록 반영 완료');
     expect(panel?.textContent).toContain('컬렉션 12개');
     expect(panel?.querySelector('a')?.getAttribute('href')).toBe('https://avalon-collection-studio.web.app/');
+    expect(panel?.querySelector('a')?.textContent).toContain('전시 설정 열기');
     await act(async () => panel?.querySelector('button')?.click());
     expect(exhibition.retry).toHaveBeenCalledOnce();
     expect(request).toHaveBeenCalledOnce();
