@@ -4,10 +4,11 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 const profileId = 'a'.repeat(64);
 const companionId = 'b'.repeat(64);
 const otherId = 'c'.repeat(64);
-const api = vi.hoisted(() => ({ find: vi.fn(), load: vi.fn() }));
+const api = vi.hoisted(() => ({ find: vi.fn(), load: vi.fn(), descriptions: vi.fn() }));
 vi.mock('../../exhibition/data', () => ({
   findExhibitionMembers: api.find,
   loadExhibitionView: async (id: string) => ({ record: await api.load(id), descriptions: { avalon: '전시 설명' } }),
+  loadExhibitionDescriptions: api.descriptions,
   exhibitionErrorMessage: () => '전시 조회 실패',
 }));
 
@@ -38,6 +39,7 @@ describe('public exhibition view', () => {
 
   it('opens a name match, filters same-group games and returns focus from a pin', async () => {
     api.find.mockResolvedValue([{ profileId }]);
+    api.descriptions.mockResolvedValue({ avalon: '새 전시 설명' });
     api.load.mockResolvedValue({ name: '합성 가람', days: [
       { date: '2026-09-02', gameIds: ['avalon', 'dixit'], gameCounts: { avalon: 2, dixit: 1 },
         companions: [{ profileId: companionId, name: '합성 한결', gameIds: ['avalon'] },
@@ -66,6 +68,7 @@ describe('public exhibition view', () => {
     expect(document.querySelector('dialog')?.open).toBe(true);
     expect(document.querySelector('#object-title')?.textContent).toBe('레지스탕스 아발론');
     expect(document.querySelector('.object-text')?.textContent).toBe('전시 설명');
+    await vi.waitFor(() => expect(document.querySelector('.object-text')?.textContent).toBe('새 전시 설명'));
     click('[data-close]');
     await vi.waitFor(() => expect(document.querySelector('dialog')?.open).toBe(false));
     expect(document.activeElement?.getAttribute('data-pin')).toBe('avalon');
@@ -89,5 +92,19 @@ describe('public exhibition view', () => {
     expect(api.load).toHaveBeenCalledWith(otherId);
     submitName('다시 시도');
     await vi.waitFor(() => expect(document.querySelector('#entry-error')?.textContent).toBe('전시 조회 실패'));
+  });
+
+  it('shows the name and date for a recorded game without a pin image', async () => {
+    const unillustrated = 'game-' + 'f'.repeat(64);
+    api.find.mockResolvedValue([{ profileId }]);
+    api.load.mockResolvedValue({ name: '합성 부원', gameTitles: { [unillustrated]: '핀 없는 게임' },
+      days: [{ date: '2026-09-02', gameIds: [unillustrated], companions: [] }] });
+    submitName('합성 부원');
+    await vi.waitFor(() => expect(pins()).toEqual([unillustrated]));
+    click(`[data-pin="${unillustrated}"]`);
+    const dialog = document.querySelector('dialog');
+    expect(dialog?.querySelector('#object-title')?.textContent).toBe('핀 없는 게임');
+    expect(dialog?.querySelector('time')?.dateTime).toBe('2026-09-02');
+    expect(dialog?.querySelector('img')).toBeNull();
   });
 });

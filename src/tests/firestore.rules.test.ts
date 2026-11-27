@@ -296,11 +296,13 @@ describe('Firestore Security Rules', () => {
       const local = context.firestore();
       await setDoc(doc(local, 'members/a'), { name: '합성 가람', studentId: '26', phone: 'private' });
       await setDoc(doc(local, 'members/b'), { name: '합성 나래', studentId: '25' });
+      await setDoc(doc(local, 'games/coffee'), { title: '커피러시' });
+      await setDoc(doc(local, 'games/other'), { title: '핀 없는 게임' });
       await setDoc(doc(local, 'sessions/legacy'), { name: '이전 형식', date: '2026-09-01',
         groups: [{ id: 'old-group', memberIds: ['a'], gameIds: ['dixit'] }] });
     });
     await saveExhibitionSettings('avalon', { enabled: true, period: { kind: 'all' },
-      gameMapping: ['avalon', 'coffee', 'dixit'].map(id => ({ sourceId: id, pinId: id })),
+      gameMapping: ['avalon', 'dixit'].map(id => ({ sourceId: id, pinId: id })),
       descriptions: { avalon: '전시 담당 설명' } });
     expect((await loadExhibitionSettings('avalon'))?.descriptions).toEqual({ avalon: '전시 담당 설명' });
     await assertFails(getDoc(doc(visitor, 'exhibitionSettings/avalon')));
@@ -312,6 +314,10 @@ describe('Firestore Security Rules', () => {
     const id = matches[0]!.profileId;
     expect((await publicReader.loadExhibitionView(id)).descriptions).toEqual({ avalon: '전시 담당 설명' });
     expect((await loadExhibitionStatus('avalon')).pending).toBe(false);
+    await saveExhibitionSettings('avalon', { enabled: true, period: { kind: 'all' },
+      gameMapping: ['avalon', 'dixit'].map(id => ({ sourceId: id, pinId: id })),
+      descriptions: { avalon: '수정한 설명' } });
+    expect(await publicReader.loadExhibitionDescriptions()).toEqual({ avalon: '수정한 설명' });
     await retryExhibitionRefresh();
     expect((await loadExhibitionStatus('avalon')).pending).toBe(true);
     let profile = await publicReader.loadExhibitionProfile(id);
@@ -319,10 +325,13 @@ describe('Firestore Security Rules', () => {
     expect(profile?.days[0]?.companions[0]).toMatchObject({ name: '합성 나래', gameIds: ['avalon'] });
     expect(profile).not.toHaveProperty('phone');
 
-    await updateSessionGroupGames('meeting', 'new-group', ['coffee']);
+    await updateSessionGroupGames('meeting', 'new-group', ['coffee', 'other']);
     await refreshExhibitions();
     profile = await publicReader.loadExhibitionProfile(id);
-    expect(profile?.days[0]?.companions[0]?.gameIds).toEqual(['coffee']);
+    const [otherId] = Object.keys(profile?.gameTitles ?? {});
+    expect(otherId).toMatch(/^game-[a-f0-9]{64}$/);
+    expect(profile?.gameTitles).toEqual({ [otherId!]: '핀 없는 게임' });
+    expect(profile?.days[0]?.companions[0]?.gameIds).toEqual(['coffee', otherId]);
     await deleteSessionRecord('meeting');
     await refreshExhibitions();
     expect(await publicReader.findExhibitionMembers('합성 나래')).toEqual([]);
@@ -374,7 +383,7 @@ describe('Firestore Security Rules', () => {
     const initial = (await getDoc(access)).data()?.generationId;
     const marker = doc(operator, 'exhibitionSync/source');
     const errors = vi.fn();
-    const stop = watchExhibitionSync(() => {}, errors, 'sources');
+    const { stop } = watchExhibitionSync(() => {}, errors, 'sources');
     try {
       await importSessionRecords([{ id: 'live', date: '2026-09-02', name: '실시간',
         groups: [{ id: 'group', memberIds: ['a'], gameIds: [] }] }]);
@@ -395,7 +404,7 @@ describe('Firestore Security Rules', () => {
 
     const beforeRetry = (await getDoc(access)).data()?.generationId;
     await deleteSessionRecord('live');
-    const stopAdmin = watchExhibitionSync(() => {}, errors, 'requests');
+    const { stop: stopAdmin } = watchExhibitionSync(() => {}, errors, 'requests');
     try {
       await retryExhibitionRefresh();
       await vi.waitFor(async () => {

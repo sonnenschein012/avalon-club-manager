@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   syncFailure: undefined as ((error: { step: string; code: string }) => void) | undefined,
   save: vi.fn(),
   retry: vi.fn(),
+  request: vi.fn(),
 }));
 
 vi.mock('firebase/auth', () => ({
@@ -29,7 +30,7 @@ vi.mock('../services/exhibitionSyncService', () => ({
   saveExhibitionSettings: mocks.save,
   watchExhibitionSync: (_status: unknown, reportError: typeof mocks.syncFailure) => {
     mocks.syncFailure = reportError;
-    return () => {};
+    return { stop: () => {}, request: mocks.request };
   },
 }));
 
@@ -79,5 +80,6 @@ describe('exhibition admin settings', () => {
     expect(document.body.textContent).toContain('설정을 저장했습니다. 전시에 자동 반영됩니다.');
     await act(async () => { clickButton('다시 반영'); });
     expect(mocks.retry).toHaveBeenCalledOnce();
+    expect(mocks.request).toHaveBeenCalledTimes(2);
   });
 });

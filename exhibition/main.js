@@ -1,7 +1,7 @@
 import games from './games.json';
 import { placeRankedPins } from './pin-layout.js';
 import { exhibitionGames, rankedCompanions, rankedGames } from '../src/domain/exhibition/collection';
-import { exhibitionErrorMessage, findExhibitionMembers, loadExhibitionView } from './data';
+import { exhibitionErrorMessage, findExhibitionMembers, loadExhibitionView, loadExhibitionDescriptions } from './data';
 
 const pinAssets = import.meta.glob('./assets/pins/*.webp', { eager: true, query: '?url', import: 'default' });
 const gameTieRanks = new Map(Object.keys(games).map(id => [id, Math.random()]));
@@ -37,10 +37,17 @@ function intro(){
   return '<header class="exhibit-intro"><h1 class="exhibit-title" lang="en"><span class="title-name">'+esc(title.slice(0,split))+'</span> <span class="title-kind">'+esc(title.slice(split+1))+'</span></h1></header>';
 }
 
+function gameItem(id) {
+  if (Object.hasOwn(games, id)) return games[id];
+  const title = (profile?.data.gameTitles ?? {})[id];
+  return /^game-[a-f0-9]{64}$/.test(id) && title ? { ko: title, pending: true, unillustrated: true } : null;
+}
+
 function scatterPin(id) {
-  const item=games[id];
-  const art=item.pending?'<span class="pending-art" aria-hidden="true"><span>+</span><small>제작 예정</small></span>':'<img src="'+asset(id)+'" alt="" draggable="false" loading="lazy" decoding="async">';
-  return '<button type="button" class="pin scatter-pin'+(item.pending?' pending-pin':'')+'" aria-label="'+esc(item.ko)+(item.pending?' · 핀 제작 예정':' 핀과 함께한 날 보기')+'" data-pin="'+id+'">'+art+'<span class="pin-label">'+esc(item.ko)+'</span></button>';
+  const item=gameItem(id);
+  const art=item.pending?'<span class="pending-art" aria-hidden="true"><span>+</span><small>'+
+    (item.unillustrated?'기록':'제작 예정')+'</small></span>':'<img src="'+asset(id)+'" alt="" draggable="false" loading="lazy" decoding="async">';
+  return '<button type="button" class="pin scatter-pin'+(item.pending?' pending-pin':'')+'" aria-label="'+esc(item.ko)+' 함께한 날 보기" data-pin="'+id+'">'+art+'<span class="pin-label">'+esc(item.ko)+'</span></button>';
 }
 function showEntry(){
   document.title="Your Collection";
@@ -73,7 +80,7 @@ function makeState(route) {
   const companions = rankedCompanions(scopedDays);
   const selected = exhibitionGames(profile.data, { date, companionId: companion?.profileId });
   const gameOrder = profile.gameOrder.filter(id => selected.has(id));
-  const pin = selected.has(route.pin) && Object.hasOwn(games, route.pin) ? route.pin : '';
+  const pin = selected.has(route.pin) && gameItem(route.pin) ? route.pin : '';
   return { id: route.id, date, dates, companions, companion, gameOrder, pin };
 }
 
@@ -103,7 +110,7 @@ function archive(state) {
 }
 
 function collection(state) {
-  const ordered = state.gameOrder.filter(id => Object.hasOwn(games, id));
+  const ordered = state.gameOrder.filter(id => gameItem(id));
   const pins = ordered.map(scatterPin).join('');
   const companionHeading = state.companion
     ? `<div class="companion-filter">${esc(state.companion.name)}님과 함께한 게임<a class="text-control" href="${formPath(state.id, state.date)}">필터 해제</a></div>`
@@ -149,20 +156,32 @@ if (typeof ResizeObserver === 'function') {
 }
 
 function renderObject(state) {
-  const item = games[state.pin];
+  const item = gameItem(state.pin);
   const companionId = state.companion?.profileId || '';
   const dates = exhibitionGames(profile.data, { companionId }).get(state.pin) || [];
   const links = dates.map(date =>
     `<a href="${formPath(state.id, date, companionId)}" aria-label="${esc(dateText(date))} 세션 기록 보기"><time datetime="${esc(date)}">${esc(date.replaceAll('-', '. '))}</time><span class="day">${dayOf(date)}요일</span>${icon('book')}</a>`,
   ).join('');
-  objectDialog.innerHTML = '<div class="object-sheet"><button type="button" class="modal-close" data-close aria-label="핀 상세 닫기">'+
-    icon('close')+'</button><div class="pin-field"><img src="'+asset(state.pin)+'" alt="'+esc(item.ko)+
-    '의 에나멜 핀"></div><div class="object-info"><p lang="en" class="object-en">'+esc(item.en)+
-    '</p><h2 id="object-title">'+esc(item.ko)+'</h2><p class="object-text">'+esc(profile.descriptions[state.pin] || item.motif)+
-    '</p><div class="detail-dates"><h3>함께한 날</h3>'+links+'</div></div></div>';
+  const artwork = item.unillustrated ? '' :
+    '<div class="pin-field"><img src="'+asset(state.pin)+'" alt="'+esc(item.ko)+'의 에나멜 핀"></div>';
+  const englishTitle = item.en ? '<p lang="en" class="object-en">'+esc(item.en)+'</p>' : '';
+  const text = item.unillustrated ? '' : '<p class="object-text">'+esc(profile.descriptions[state.pin] || item.motif)+'</p>';
+  objectDialog.innerHTML = '<div class="object-sheet'+(item.unillustrated?' text-only':'')+'"><button type="button" class="modal-close" data-close aria-label="핀 상세 닫기">'+
+    icon('close')+'</button>'+artwork+'<div class="object-info">'+englishTitle+'<h2 id="object-title">'+esc(item.ko)+
+    '</h2>'+text+'<div class="detail-dates"><h3>함께한 날</h3>'+links+'</div></div></div>';
   if (!objectDialog.open) objectDialog.showModal();
   document.body.classList.add('dialog-open');
   lastOpenPin = state.pin;
+  const description = objectDialog.querySelector('.object-text');
+  if (!description) return;
+  const displayedProfile = profile;
+  void loadExhibitionDescriptions().then(descriptions => {
+    if (profile !== displayedProfile || !objectDialog.open || !description.isConnected) return;
+    profile.descriptions = descriptions;
+    description.textContent = descriptions[state.pin] || item.motif;
+  }).catch(() => {
+    // Keep the description bundled with the last successfully loaded record.
+  });
 }
 
 function render(state) {

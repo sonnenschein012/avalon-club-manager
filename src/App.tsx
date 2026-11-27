@@ -96,7 +96,7 @@ export default function App() {
       if (cancelled) return;
       stop = watchExhibitionSync(() => {}, failure => {
         if (failure) console.warn('Exhibition synchronization failed.', failure);
-      }, 'sources');
+      }, 'sources').stop;
     }).catch(error => {
       if (!cancelled) console.warn('Exhibition synchronization could not start.', error);
     });

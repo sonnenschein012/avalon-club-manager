@@ -5,6 +5,7 @@ import {
 import { db } from '../lib/firebase';
 import { commitBatchesInChunks } from '../lib/chunkBatch';
 import { buildExhibitionCollection, type ExhibitionPeriod } from '../domain/exhibition/collection';
+import { automaticExhibitionPins, resolveExhibitionPins } from '../domain/exhibition/gameMapping';
 import { normalizeStudentYear } from '../domain/members/memberIdentity';
 import { exhibitionRevisionRef, requestExhibitionRefresh } from './exhibitionRevision';
 import type { Member, Session } from '../types';
@@ -40,13 +41,18 @@ export async function retryExhibitionRefresh() {
 }
 
 export async function saveExhibitionSettings(exhibitionId: string, settings: ExhibitionSettings) {
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'exhibitionSettings', exhibitionId), settings);
-  if (!settings.enabled) {
-    batch.set(doc(db, 'exhibitionAccess', exhibitionId), { enabled: false, generationId: '' });
-  }
-  requestExhibitionRefresh(batch);
-  await withFirestoreDeadline(() => batch.commit());
+  const access = doc(db, 'exhibitionAccess', exhibitionId);
+  await withFirestoreDeadline(signal => runTransaction(db, async transaction => {
+    const current = settings.enabled ? (await transaction.get(access)).data() : undefined;
+    signal.throwIfAborted();
+    transaction.set(doc(db, 'exhibitionSettings', exhibitionId), settings);
+    if (!settings.enabled) {
+      transaction.set(access, { enabled: false, generationId: '' });
+    } else if (current?.enabled && current.generationId) {
+      transaction.update(access, { descriptions: settings.descriptions ?? {} });
+    }
+    requestExhibitionRefresh(transaction);
+  }));
 }
 
 async function pruneSupersededGenerations(exhibitionIds: string[], signal: AbortSignal) {
@@ -116,10 +122,11 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
   signal.throwIfAborted();
   const active = settings.docs.filter(snapshot => (snapshot.data() as ExhibitionSettings).enabled);
   const activeIds = active.map(snapshot => snapshot.id);
-  const [sessionSnapshot, memberSnapshot] = active.length ? await Promise.all([
+  const [sessionSnapshot, memberSnapshot, gameSnapshot] = active.length ? await Promise.all([
     getDocsFromServer(collection(db, 'sessions')),
     getDocsFromServer(collection(db, 'members')),
-  ]) : [null, null];
+    getDocsFromServer(collection(db, 'games')),
+  ]) : [null, null, null];
   signal.throwIfAborted();
   const sessions = (sessionSnapshot?.docs ?? []).map(snapshot => {
     const session = snapshot.data() as Session;
@@ -132,7 +139,12 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
     const member = snapshot.data() as Member;
     return { id: snapshot.id, name: member.name ?? '', yearLabel: normalizeStudentYear(member.studentId ?? '') };
   });
-  const payload = new TextEncoder().encode(JSON.stringify([sessions, members]));
+  const games = (gameSnapshot?.docs ?? []).map(snapshot => ({
+    id: snapshot.id,
+    title: String(snapshot.data().title ?? ''),
+  }));
+  const automaticPins = automaticExhibitionPins(games);
+  const payload = new TextEncoder().encode(JSON.stringify([sessions, members, games]));
   const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', payload)),
     byte => byte.toString(16).padStart(2, '0')).join('');
   reportStep('변경 확인');
@@ -172,8 +184,11 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
   }[] = [];
   for (const snapshot of active) {
     const { period, gameMapping, descriptions = {} } = snapshot.data() as ExhibitionSettings;
+    const excluded = new Set(gameMapping.filter(({ pinId }) => pinId === '').map(({ sourceId }) => sourceId));
+    const titlesWithoutPins = new Map(games.filter(game => game.title.trim() && !excluded.has(game.id))
+      .map(({ id, title }) => [id, title.trim()]));
     const result = await buildExhibitionCollection(snapshot.id, period, sessions, members,
-      new Map(gameMapping.map(({ sourceId, pinId }) => [sourceId, pinId])));
+      resolveExhibitionPins(automaticPins, gameMapping), titlesWithoutPins);
     const access = doc(db, 'exhibitionAccess', snapshot.id);
     operations.push({ ref: doc(access, 'generations', generationId), data: { revision } });
     for (const kind of ['names', 'profiles'] as const) {
@@ -182,7 +197,8 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
       }
     }
     changes.push({ access, diagnostics: doc(db, 'exhibitionDiagnostics', snapshot.id),
-      unmappedGameIds: result.unmappedGameIds, missingMemberIds: result.missingMemberIds, descriptions });
+      unmappedGameIds: result.unmappedGameIds.filter(id => !excluded.has(id)),
+      missingMemberIds: result.missingMemberIds, descriptions });
   }
   reportStep('전시 데이터 저장');
   // Each chunk checks the revision in its transaction so a superseded worker
@@ -264,8 +280,8 @@ export function watchExhibitionSync(
   }
 
   let monitorFailed = false;
-  const watches = (watch === 'requests' ? [] : [collection(db, 'sessions'), collection(db, 'members')]).map(ref =>
-    onSnapshot(ref, { includeMetadataChanges: true }, snapshot => {
+  const watches = (watch === 'requests' ? [] : ['sessions', 'members', 'games']).map(path =>
+    onSnapshot(collection(db, path), { includeMetadataChanges: true }, snapshot => {
       if (!snapshot.metadata.fromCache && !snapshot.metadata.hasPendingWrites) schedule();
     }, error => {
       monitorFailed = true;
@@ -292,7 +308,7 @@ export function watchExhibitionSync(
   window.addEventListener('online', onReconnect);
   window.addEventListener('focus', onReconnect);
   schedule();
-  return () => {
+  function stop() {
     stopped = true;
     controller.abort();
     clearTimeout(retry);
@@ -300,5 +316,6 @@ export function watchExhibitionSync(
     watches.forEach(unsubscribe => unsubscribe());
     window.removeEventListener('online', onReconnect);
     window.removeEventListener('focus', onReconnect);
-  };
+  }
+  return { stop, request: () => schedule(0) };
 }

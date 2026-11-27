@@ -452,3 +452,4 @@ html,.modal{
   height: 80%;
 }
 .scatter-field.ranked-layout .blank { margin: 0; padding-block: 16px; }
+.object-sheet.text-only { grid-template-columns: minmax(0, 1fr); min-height: 0; }

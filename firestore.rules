@@ -440,8 +440,9 @@ service cloud.firestore {
       allow create, update: if isAdmin() && (
         (kind == 'names' && request.resource.data.keys().hasOnly(['candidates']) &&
           request.resource.data.candidates is list) ||
-        (kind == 'profiles' && request.resource.data.keys().hasOnly(['name', 'days']) &&
-          request.resource.data.name is string && request.resource.data.days is list)
+        (kind == 'profiles' && request.resource.data.keys().hasOnly(['name', 'days', 'gameTitles']) &&
+          request.resource.data.name is string && request.resource.data.days is list &&
+          request.resource.data.get('gameTitles', {}) is map)
       );
     }
 

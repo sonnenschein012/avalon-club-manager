@@ -42,5 +42,6 @@ export function createExhibitionReader(db: Firestore, exhibitionId: string) {
 
   const loadExhibitionView = (id: string) => readActive<ExhibitionProfile>('profiles', id);
   const loadExhibitionProfile = async (id: string) => (await loadExhibitionView(id)).record;
-  return { findExhibitionMembers, loadExhibitionProfile, loadExhibitionView };
+  const loadExhibitionDescriptions = async () => (await generation()).descriptions;
+  return { findExhibitionMembers, loadExhibitionProfile, loadExhibitionView, loadExhibitionDescriptions };
 }

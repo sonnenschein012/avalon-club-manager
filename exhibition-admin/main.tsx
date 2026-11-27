@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { collection, getDocsFromServer } from 'firebase/firestore';
@@ -8,16 +8,15 @@ import {
   watchExhibitionSync, type ExhibitionSettings, type ExhibitionSyncStatus, type ExhibitionSyncError,
 } from '../src/services/exhibitionSyncService';
 import pins from '../exhibition/games.json';
+import { automaticExhibitionPins, type ExhibitionGameChoice } from '../src/domain/exhibition/gameMapping';
 import './style.css';
 
 const catalog = Object.entries(pins);
 const defaultId = import.meta.env.VITE_EXHIBITION_ID || 'avalon';
 const empty: ExhibitionSettings = { enabled: false, period: { kind: 'all' }, gameMapping: [] };
 
-type GameChoice = { id: string; title: string };
-
-function ExhibitionForm({ id, games, initial, sync }: {
-  id: string; games: GameChoice[]; initial: ExhibitionSettings; sync: ExhibitionSyncStatus;
+function ExhibitionForm({ id, games, initial, sync, requestSync }: {
+  id: string; games: ExhibitionGameChoice[]; initial: ExhibitionSettings; sync: ExhibitionSyncStatus; requestSync: () => void;
 }) {
   const [enabled, setEnabled] = useState(initial.enabled);
   const [kind, setKind] = useState(initial.period.kind);
@@ -53,6 +52,7 @@ function ExhibitionForm({ id, games, initial, sync }: {
         enabled, period, gameMapping: [...mapping].map(([sourceId, pinId]) => ({ sourceId, pinId })),
         descriptions: Object.fromEntries(Object.entries(descriptions).filter(([, value]) => value.trim()).map(([key, value]) => [key, value.trim()])),
       });
+      requestSync();
       setMessage(enabled ? '설정을 저장했습니다. 전시에 자동 반영됩니다.' : '설정을 저장하고 전시를 비공개로 전환했습니다.');
     } catch (error) {
       setMessage(`설정을 저장하지 못했습니다. (${(error as { code?: string }).code ?? 'unexpected-error'})`);
@@ -63,7 +63,8 @@ function ExhibitionForm({ id, games, initial, sync }: {
     setBusy(true);
     try {
       await retryExhibitionRefresh();
-      setMessage('저장된 설정으로 다시 반영을 요청했습니다.');
+      requestSync();
+      setMessage('저장된 설정으로 다시 반영을 시작했습니다.');
     } catch (error) {
       setMessage(`다시 반영을 요청하지 못했습니다. (${(error as { code?: string }).code ?? 'unexpected-error'})`);
     } finally { setBusy(false); }
@@ -71,14 +72,16 @@ function ExhibitionForm({ id, games, initial, sync }: {
 
   const unmapped = new Set(status?.unmappedGameIds ?? []);
   const titles = new Map(games.map(game => [game.id, game.title]));
-  const statusText = sync === 'error' ? '반영 실패 · 자동 재시도 예정' : sync === 'syncing' ? '반영 중' : sync === 'pending' || status?.pending ? '반영 대기'
-    : status ? '대기 작업 없음' : '상태 확인 중';
+  const automaticPins = automaticExhibitionPins(games);
+  const statusText = sync === 'syncing' ? '반영 중' : status && !status.pending ? '대기 작업 없음'
+    : sync === 'error' ? '반영 실패 · 자동 재시도 예정'
+    : sync === 'pending' || status?.pending ? '반영 대기' : '상태 확인 중';
 
   return <>
     <section className="status" aria-label="반영 상태">
       <div>
         <strong role="status">{statusText}</strong>
-        <p>미연결 게임 {unmapped.size}개 · 누락 회원 참조 {status?.missingMemberIds.length ?? 0}개</p>
+        <p>핀 미연결 게임 {unmapped.size}개 · 누락 회원 참조 {status?.missingMemberIds.length ?? 0}개</p>
       </div>
       <button type="button" disabled={busy} onClick={() => void retry()}>다시 반영</button>
     </section>
@@ -100,21 +103,26 @@ function ExhibitionForm({ id, games, initial, sync }: {
       </fieldset>
       <fieldset disabled={busy}>
         <legend>운영 게임과 전시 핀 연결</legend>
+        <p>이름이 일치하는 게임은 자동으로 연결됩니다. 핀이 없는 게임도 이름과 기록을 표시합니다. 핀을 직접 지정하거나 전시에서 제외할 수 있습니다.</p>
         {games.length === 0 && <p>운영 앱에 등록된 게임이 없습니다.</p>}
-        {games.map(game => <label className="mapping" key={game.id}>{game.title}
-          <select aria-label={`${game.title} 전시 핀`} value={mapping.get(game.id) ?? ''} onChange={event => {
+        {games.map(game => {
+          const suggestedTitle = pins[automaticPins.get(game.id) as keyof typeof pins]?.ko;
+          return <label className="mapping" key={game.id}>{game.title}
+          <select aria-label={`${game.title} 전시 핀`} value={mapping.get(game.id) ?? 'auto'} onChange={event => {
             const chosen = event.target.value;
             setMapping(previous => {
               const next = new Map(previous);
-              if (chosen) next.set(game.id, chosen);
-              else next.delete(game.id);
+              if (chosen === 'auto') next.delete(game.id);
+              else next.set(game.id, chosen);
               return next;
             });
           }}>
-            <option value="">미연결</option>
+            <option value="auto">{suggestedTitle ? `자동 연결 · ${suggestedTitle}` : '핀 없이 표시'}</option>
+            <option value="">전시 제외</option>
             {catalog.map(([pinId, item]) => <option key={pinId} value={pinId}>{item.ko}</option>)}
           </select>
-        </label>)}
+          </label>;
+        })}
       </fieldset>
       <fieldset disabled={busy}>
         <legend>핀 설명</legend>
@@ -133,12 +141,17 @@ function ExhibitionForm({ id, games, initial, sync }: {
 function Workspace({ user }: { user: User }) {
   const [id, setId] = useState(defaultId);
   const [loadAttempt, setLoadAttempt] = useState(0);
-  const [loaded, setLoaded] = useState<{ settings: ExhibitionSettings; games: GameChoice[] }>();
+  const [loaded, setLoaded] = useState<{ settings: ExhibitionSettings; games: ExhibitionGameChoice[] }>();
   const [sync, setSync] = useState<ExhibitionSyncStatus>('idle');
   const [syncError, setSyncError] = useState<ExhibitionSyncError | null>(null);
   const [error, setError] = useState('');
 
-  useEffect(() => watchExhibitionSync(setSync, setSyncError, 'requests'), []);
+  const requestSync = useRef<() => void>(() => {});
+  useEffect(() => {
+    const watcher = watchExhibitionSync(setSync, setSyncError, 'requests');
+    requestSync.current = watcher.request;
+    return watcher.stop;
+  }, []);
   useEffect(() => {
     let cancelled = false;
     void Promise.all([loadExhibitionSettings(id), getDocsFromServer(collection(db, 'games'))]).then(([settings, games]) => {
@@ -167,7 +180,7 @@ function Workspace({ user }: { user: User }) {
       전시 동기화 오류 · {syncError.step} ({syncError.code})
     </p>}
     {error ? <p role="alert">{error}</p> : loaded
-      ? <ExhibitionForm key={id} id={id} initial={loaded.settings} games={loaded.games} sync={sync} />
+      ? <ExhibitionForm key={id} id={id} initial={loaded.settings} games={loaded.games} sync={sync} requestSync={() => requestSync.current()} />
       : <p role="status">전시 설정을 불러오는 중입니다.</p>}
   </>;
 }
