@@ -6,7 +6,7 @@ import { koreaDateKey } from '../shared/koreaDate';
 export type ExhibitionPeriod =
   | { kind: 'all' }
   | { kind: 'semester'; semester: string }
-  | { kind: 'range'; start: string; end: string };
+  | { kind: 'range'; start: string; end: string; semesters?: { start: string; end: string } };
 
 interface ExhibitionMember {
   id: string;
@@ -107,14 +107,14 @@ export async function buildExhibitionCollection(
       const gameIds = new Set<string>();
       for (const id of group.gameIds ?? []) {
         const mappedId = gameMapping.get(id);
-        if (mappedId) {
+        if (mappedId && !mappedId.startsWith('game-')) {
           gameIds.add(mappedId);
           continue;
         }
         unmappedGameIds.add(id);
         const title = titlesWithoutPins.get(id);
         if (!title) continue;
-        const fallback = fallbackGames.get(id) ?? { id: 'game-' + await documentKey([id]), title };
+        const fallback = fallbackGames.get(id) ?? { id: mappedId ?? 'game-' + await documentKey([id]), title };
         fallbackGames.set(id, fallback);
         gameIds.add(fallback.id);
       }
@@ -208,7 +208,7 @@ export function rankedCompanions(days: readonly ExhibitionDay[]) {
     byKoreanName.compare(a.name, b.name) || a.profileId.localeCompare(b.profileId));
 }
 
-export function rankedGames(days: readonly ExhibitionDay[], tieRanks: ReadonlyMap<string, number>) {
+export function rankedGames(days: readonly ExhibitionDay[], tieRanks: ReadonlyMap<string, number> = new Map()) {
   const games = new Map<string, { id: string; count: number; recent: string }>();
   for (const day of days) {
     for (const id of day.gameIds) {

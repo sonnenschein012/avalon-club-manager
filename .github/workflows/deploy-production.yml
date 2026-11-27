@@ -142,7 +142,7 @@ jobs:
           sites=()
           if [[ "$MANAGER" == true ]]; then sites+=(avalondgu); fi
           if [[ "$EXHIBITION" == true ]]; then sites+=(avalon-collection); fi
-          if [[ "$EXHIBITION_ADMIN" == true ]]; then sites+=(avalon-collection-admin); fi
+          if [[ "$EXHIBITION_ADMIN" == true ]]; then sites+=(avalon-collection-studio); fi
           result="$RUNNER_TEMP/firebase-hosting-sites.json"
           if ! npx --no-install firebase hosting:sites:list --project "$FIREBASE_PROJECT" --non-interactive --json > "$result"; then
             jq -r '.error // .message // empty' "$result"

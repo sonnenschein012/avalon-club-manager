@@ -1,14 +1,21 @@
 import { readFileSync } from 'node:fs';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const profileId = 'a'.repeat(64);
 const companionId = 'b'.repeat(64);
 const otherId = 'c'.repeat(64);
-const api = vi.hoisted(() => ({ find: vi.fn(), load: vi.fn(), descriptions: vi.fn() }));
+const api = vi.hoisted(() => ({
+  find: vi.fn(), load: vi.fn(), descriptions: vi.fn(), generation: '1',
+  publication: undefined as ((notice: { id: string; descriptions: Record<string, string> }) => void) | undefined,
+  copy: undefined as ((notice: { entryTitle: string; edition: string; namePrompt: string }) => void) | undefined,
+}));
 vi.mock('../../exhibition/data', () => ({
   findExhibitionMembers: api.find,
-  loadExhibitionView: async (id: string) => ({ record: await api.load(id), descriptions: { avalon: '전시 설명' } }),
+  loadExhibitionView: async (id: string) => ({ record: await api.load(id), generationId: api.generation, descriptions: { avalon: '전시 설명' } }),
   loadExhibitionDescriptions: api.descriptions,
+  watchExhibitionPublication: (callback: typeof api.publication) => { api.publication = callback; return () => {}; },
+  watchExhibitionCopy: (callback: typeof api.copy) => { api.copy = callback; return () => {}; },
+  watchExhibitionAppearance: () => () => {},
   exhibitionErrorMessage: () => '전시 조회 실패',
 }));
 
@@ -31,10 +38,13 @@ describe('public exhibition view', () => {
     await import('../../exhibition/main.js');
   });
 
+  beforeEach(() => { api.descriptions.mockResolvedValue({}); });
+
   afterEach(() => {
     history.replaceState(null, '', '#');
     window.dispatchEvent(new Event('hashchange'));
     vi.resetAllMocks();
+    api.generation = '1';
   });
 
   it('opens a name match, filters same-group games and returns focus from a pin', async () => {
@@ -106,5 +116,34 @@ describe('public exhibition view', () => {
     expect(dialog?.querySelector('#object-title')?.textContent).toBe('핀 없는 게임');
     expect(dialog?.querySelector('time')?.dateTime).toBe('2026-09-02');
     expect(dialog?.querySelector('img')).toBeNull();
+  });
+
+  it('updates entry text without clearing the form and refreshes a published collection already on screen', async () => {
+    const input = document.querySelector<HTMLInputElement>('#member-name')!;
+    input.value = '합성 부원';
+    api.copy?.({ entryTitle: '우리가 한 게임', edition: '새 부제', namePrompt: '부원 이름을 적어 주세요' });
+    expect(document.querySelector('.entry-title')?.textContent).toBe('우리가 한 게임');
+    expect(document.querySelector('.entry-edition')?.textContent).toBe('새 부제');
+    expect(input.placeholder).toBe('부원 이름을 적어 주세요');
+    expect(input.value).toBe('합성 부원');
+
+    api.find.mockResolvedValue([{ profileId }]);
+    api.load.mockResolvedValue({ name: '합성 부원', days: [
+      { date: '2026-09-02', gameIds: ['avalon'], companions: [] },
+      { date: '2026-09-01', gameIds: ['coffee'], companions: [] },
+    ] });
+    submitName(input.value);
+    await vi.waitFor(() => expect(pins()).toEqual(['avalon', 'coffee']));
+    click('.archive-date[href*="2026-09-02"]');
+    expect(pins()).toEqual(['avalon']);
+
+    api.generation = '2';
+    api.load.mockResolvedValue({ name: '합성 부원', days: [
+      { date: '2026-09-02', gameIds: ['dixit'], companions: [] },
+      { date: '2026-09-01', gameIds: ['coffee'], companions: [] },
+    ] });
+    api.publication?.({ id: '2', descriptions: {} });
+    await vi.waitFor(() => expect(pins()).toEqual(['dixit']));
+    expect(document.querySelector('.archive-date[aria-current] time')?.getAttribute('datetime')).toBe('2026-09-02');
   });
 });

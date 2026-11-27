@@ -393,37 +393,88 @@ service cloud.firestore {
         (id == 'progress' || (request.resource.data.revision ==
           (resource == null ? 1 : resource.data.revision + 1) &&
           // An old browser must not republish a generation without game titles.
-          (resource == null || !resource.data.get('fingerprint', '').matches('projection-v2:.*') ||
-            request.resource.data.get('fingerprint', '').matches('projection-v2:[a-f0-9]{64}'))));
+          (resource == null || !resource.data.get('fingerprint', '').matches('projection-v[23]:.*') ||
+            (resource.data.get('fingerprint', '').matches('projection-v2:.*') &&
+              request.resource.data.get('fingerprint', '').matches('projection-v2:[a-f0-9]{64}')) ||
+            request.resource.data.get('fingerprint', '').matches('projection-v3:[a-f0-9]{64}'))));
     }
 
     match /exhibitionSettings/{id} {
       allow read: if isAdmin();
       allow create, update: if isAdmin() &&
-        request.resource.data.keys().hasOnly(['enabled', 'period', 'gameMapping', 'descriptions']) &&
+        request.resource.data.keys().hasOnly(['enabled', 'period', 'gameMapping', 'descriptions', 'images', 'copy', 'visibility', 'schedule']) &&
         request.resource.data.enabled is bool && request.resource.data.period is map &&
         request.resource.data.gameMapping is list &&
-        request.resource.data.get('descriptions', {}) is map;
+        request.resource.data.get('descriptions', {}) is map &&
+        request.resource.data.get('images', {}) is map &&
+        request.resource.data.get('copy', {}) is map &&
+        request.resource.data.get('visibility', 'public') in ['public', 'private', 'temporary'] &&
+        request.resource.data.get('schedule', {}) is map;
     }
 
     match /exhibitionDiagnostics/{id} {
       allow read, write: if isAdmin();
     }
 
-    function canReadExhibitionGeneration(exhibitionId, generationId) {
+    function exhibitionIsOpen(data) {
+      return data.enabled == true && (!data.keys().hasAny(['startsAt', 'endsAt']) ||
+        (request.time >= data.startsAt && request.time < data.endsAt));
+    }
+
+    function isActiveExhibitionGeneration(exhibitionId, generationId) {
       let current = get(/databases/$(database)/documents/exhibitionAccess/$(exhibitionId));
       return current.data.enabled == true && current.data.generationId == generationId;
     }
 
+    function canReadExhibitionGeneration(exhibitionId, generationId) {
+      let current = get(/databases/$(database)/documents/exhibitionAccess/$(exhibitionId));
+      return exhibitionIsOpen(current.data) && current.data.generationId == generationId;
+    }
+
+    match /exhibitionCopy/{id} {
+      allow get: if true;
+      allow create, update: if isAdmin() &&
+        request.resource.data.keys().hasOnly(['copy']) && request.resource.data.copy is map &&
+        request.resource.data.copy.keys().hasOnly([
+          'entryTitle', 'edition', 'namePrompt', 'collectionTitle', 'pinHint', 'archiveTitle',
+          'groupLabel', 'companionsLabel', 'labelsToggle', 'anotherName', 'unpublished', 'noNameMatch',
+          'noGames', 'noDayGames', 'noCompanionGames', 'allDates', 'clearFilter', 'fallbackPin',
+          'checkingName', 'sameName', 'loadingRecord', 'missingRecord', 'loadError'
+        ]);
+    }
+
+    match /exhibitionPinAppearance/{id} {
+      allow get: if isAdmin() ||
+        exhibitionIsOpen(get(/databases/$(database)/documents/exhibitionAccess/$(id)).data);
+      allow create, update: if isAdmin() &&
+        request.resource.data.keys().hasOnly(['descriptions', 'images']) &&
+        request.resource.data.descriptions is map && request.resource.data.images is map;
+    }
+
+    function keepsExhibitionWindow(id, data) {
+      let settings = /databases/$(database)/documents/exhibitionSettings/$(id);
+      return data.enabled == false || !existsAfter(settings) ||
+        getAfter(settings).data.get('visibility', 'public') != 'temporary' ||
+        data.keys().hasAll(['startsAt', 'endsAt']);
+    }
+
     // Public documents contain only the projected exhibition data.
     match /exhibitionAccess/{exhibitionId} {
-      allow get: if isAdmin() || resource.data.enabled == true;
+      allow get: if isAdmin() || exhibitionIsOpen(resource.data);
       allow list, delete: if isAdmin();
       allow create, update: if isAdmin() &&
-        request.resource.data.keys().hasOnly(['enabled', 'generationId', 'descriptions']) &&
+        request.resource.data.keys().hasOnly(['enabled', 'generationId', 'descriptions', 'images', 'gameTitles', 'startsAt', 'endsAt']) &&
         request.resource.data.enabled is bool &&
         request.resource.data.generationId is string &&
-        request.resource.data.get('descriptions', {}) is map;
+        request.resource.data.get('descriptions', {}) is map &&
+        request.resource.data.get('images', {}) is map &&
+        request.resource.data.get('gameTitles', {}) is map &&
+        (!request.resource.data.generationId.matches('v2-.*') ||
+          (resource != null && resource.data.generationId == request.resource.data.generationId)) &&
+        keepsExhibitionWindow(exhibitionId, request.resource.data) &&
+        (!request.resource.data.keys().hasAny(['startsAt', 'endsAt']) ||
+          (request.resource.data.startsAt is timestamp && request.resource.data.endsAt is timestamp &&
+            request.resource.data.startsAt < request.resource.data.endsAt));
     }
 
     match /exhibitionAccess/{exhibitionId}/generations/{generationId} {
@@ -431,7 +482,7 @@ service cloud.firestore {
       allow create, update: if isAdmin() &&
         request.resource.data.keys().hasOnly(['revision']) &&
         request.resource.data.revision is int && request.resource.data.revision > 0;
-      allow delete: if isAdmin() && !canReadExhibitionGeneration(exhibitionId, generationId);
+      allow delete: if isAdmin() && !isActiveExhibitionGeneration(exhibitionId, generationId);
     }
 
     match /exhibitionAccess/{exhibitionId}/generations/{generationId}/{kind}/{entryId} {
@@ -439,7 +490,7 @@ service cloud.firestore {
         (isAdmin() || canReadExhibitionGeneration(exhibitionId, generationId));
       allow list: if kind in ['names', 'profiles'] && isAdmin();
       allow delete: if kind in ['names', 'profiles'] && isAdmin() &&
-        !canReadExhibitionGeneration(exhibitionId, generationId);
+        !isActiveExhibitionGeneration(exhibitionId, generationId);
       allow create, update: if isAdmin() && (
         (kind == 'names' && request.resource.data.keys().hasOnly(['candidates']) &&
           request.resource.data.candidates is list) ||

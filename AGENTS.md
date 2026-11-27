@@ -28,6 +28,7 @@
 
 - New-computer setup is in docs/new-computer.md. No personal workflow installation or old chat history is required.
 - Deployment is a separate operation following docs/operations.md. Tooling, docs and graph changes alone do not require app deployment.
+- Use `avalon-collection-studio.web.app` for production exhibition administration and verification. `avalon-collection-admin.web.app` is retired.
 
 ## Graphify commands
 

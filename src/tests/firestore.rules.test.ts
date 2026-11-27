@@ -318,6 +318,20 @@ describe('Firestore Security Rules', () => {
       gameMapping: ['avalon', 'dixit'].map(id => ({ sourceId: id, pinId: id })),
       descriptions: { avalon: '수정한 설명' } });
     expect(await publicReader.loadExhibitionDescriptions()).toEqual({ avalon: '수정한 설명' });
+    const copy = { entryTitle: '컬렉션', edition: 'AVALON / VOL. 05', namePrompt: '이름을 적으세요' };
+    const copyChanged = vi.fn();
+    const stopCopy = publicReader.watchExhibitionCopy(copyChanged);
+    try {
+      const needsSync = await saveExhibitionSettings('avalon', {
+        enabled: true, visibility: 'public', period: { kind: 'all' },
+        gameMapping: ['avalon', 'dixit'].map(id => ({ sourceId: id, pinId: id })),
+        descriptions: { avalon: '수정한 설명' }, copy,
+      });
+      expect(needsSync).toBe(false);
+      await vi.waitFor(() => expect(copyChanged).toHaveBeenCalledWith(copy), { timeout: 6_000 });
+    } finally { stopCopy(); }
+    await assertFails(updateDoc(doc(visitor, 'exhibitionCopy/avalon'), { copy: { entryTitle: 'unauthorized' } }));
+    await assertFails(getDocs(collection(visitor, 'exhibitionCopy')));
     await retryExhibitionRefresh();
     expect((await loadExhibitionStatus('avalon')).pending).toBe(true);
     let profile = await publicReader.loadExhibitionProfile(id);
@@ -329,13 +343,21 @@ describe('Firestore Security Rules', () => {
     await refreshExhibitions();
     profile = await publicReader.loadExhibitionProfile(id);
     const [otherId] = Object.keys(profile?.gameTitles ?? {});
-    expect(otherId).toMatch(/^game-[a-f0-9]{64}$/);
+    expect(otherId).toMatch(/^game-[a-f0-9]+$/);
     expect(profile?.gameTitles).toEqual({ [otherId!]: '핀 없는 게임' });
     expect(profile?.days[0]?.companions[0]?.gameIds).toEqual(['coffee', otherId]);
     await deleteSessionRecord('meeting');
     await refreshExhibitions();
     expect(await publicReader.findExhibitionMembers('합성 나래')).toEqual([]);
     expect((await publicReader.loadExhibitionProfile(id))?.days.map(day => day.gameIds)).toEqual([['dixit']]);
+    const futureDate = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+    await saveExhibitionSettings('avalon', {
+      enabled: true, visibility: 'temporary', schedule: { start: futureDate(7), end: futureDate(8) },
+      period: { kind: 'all' }, gameMapping: [], copy,
+    });
+    await assertFails(getDoc(doc(visitor, 'exhibitionAccess/avalon')));
+    await assertFails(getDoc(doc(visitor, 'exhibitionPinAppearance/avalon')));
+    await assertSucceeds(getDoc(doc(visitor, 'exhibitionCopy/avalon')));
     await saveExhibitionSettings('avalon', { enabled: false, period: { kind: 'all' }, gameMapping: [] });
     await expect(publicReader.loadExhibitionProfile(id)).rejects.toThrow('현재 볼 수 있는 기록이 없습니다');
   }, 20_000);
@@ -395,10 +417,14 @@ describe('Firestore Security Rules', () => {
         expect((await getDoc(doc(operator, path))).exists()).toBe(true);
       }, { timeout: 10_000, interval: 300 });
       const currentMarker = (await getDoc(marker)).data();
-      expect(currentMarker?.fingerprint).toMatch(/^projection-v2:[a-f0-9]{64}$/);
+      expect(currentMarker?.fingerprint).toMatch(/^projection-v3:[a-f0-9]{64}$/);
       await assertFails(setDoc(marker, {
         revision: Number(currentMarker?.revision) + 1,
         fingerprint: 'f'.repeat(64),
+      }));
+      await assertFails(setDoc(marker, {
+        revision: Number(currentMarker?.revision) + 1,
+        fingerprint: 'projection-v2:' + 'f'.repeat(64),
       }));
       await updateSessionGroupGames('live', 'group', ['new-game']);
       await vi.waitFor(async () => {

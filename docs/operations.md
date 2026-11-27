@@ -94,11 +94,13 @@ GitHub의 **Actions → Production Hosting → Run workflow**에서 `main`과 �
 | --- | --- |
 | `manager` | 기존 운영 앱 `avalondgu` |
 | `exhibition` | 부원용 컬렉션 `avalon-collection` |
-| `exhibition-admin` | 전시 관리자 앱 `avalon-collection-admin` |
+| `exhibition-admin` | 전시 관리자 앱 [AVALON Studio](https://avalon-collection-studio.web.app/) |
 | `firestore-rules` | 운영 named Firestore 데이터베이스의 규칙 |
 | `all` | Firestore 규칙 → 운영 앱 → 전시 관리자 앱 → 부원용 컬렉션 |
 
 `all`은 선택된 빌드와 권한 확인이 모두 통과한 다음 첫 배포를 시작합니다. 단독 배포에서 새 관리자 앱이 새 규칙을 필요로 하면 `firestore-rules`를 먼저 적용합니다. 규칙 대상에는 인덱스 배포가 포함되지 않습니다. 배포 도중 실패하면 완료된 앞 단계가 먼저 반영되므로 Actions 로그에서 완료 범위를 확인하고 남은 대상만 재실행합니다.
+
+`avalon-collection-admin.web.app`은 폐기한 주소입니다. 전시 설정 확인과 배포는 Studio 주소 `avalon-collection-studio.web.app`에서 진행합니다.
 
 게임 제목을 포함한 전시 기록이 한 번 공개되면 이전 앱 버전은 새 버전의 기록을 덮어쓸 수 없습니다. 예전에 열어 둔 운영 앱이나 전시 관리자 탭에서 반영 오류가 보이면 화면을 새로고침합니다. 이전 버전에서부터 반영이 밀렸다면 새 관리자 앱이 접속할 때 원본을 다시 계산합니다.
 

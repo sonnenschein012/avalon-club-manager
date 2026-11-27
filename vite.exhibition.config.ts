@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
+import tailwindcss from '@tailwindcss/vite';
 
 export function exhibitionConfig(directory: 'exhibition' | 'exhibition-admin') {
   return defineConfig(({ mode, command }) => {
@@ -10,6 +11,7 @@ export function exhibitionConfig(directory: 'exhibition' | 'exhibition-admin') {
 
     return {
       root: fileURLToPath(new URL(`./${directory}`, import.meta.url)),
+      plugins: directory === 'exhibition-admin' ? [tailwindcss()] : [],
       resolve: {
         alias: {
           '@firebase-config': fileURLToPath(new URL(`./firebase-applet-config${suffix}.json`, import.meta.url)),

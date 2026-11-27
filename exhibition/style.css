@@ -7,7 +7,7 @@ button,a{touch-action:manipulation}
 button{font:inherit;color:inherit;background:transparent;border:0;cursor:pointer}
 a{color:inherit;text-decoration:none}
 button:focus-visible,a:focus-visible,[tabindex]:focus-visible{outline:2px solid #9c5574;outline-offset:5px}
-main:focus{outline:0}
+#main:focus{outline:0}
 ::selection{background:#e5c7d2;color:#271a22}
 .symbols{width:0;height:0;position:absolute;overflow:hidden;pointer-events:none}
 .shell{max-width:1750px;margin-inline:auto;padding-inline:var(--gutter)}
@@ -337,7 +337,7 @@ body::before{display:none!important}
 /* 13 — one first-person title and a complete offline Korean typeface. */
 .exhibit-title,.entry-title{font-family:"BBH Bogle Embedded",var(--serif);font-weight:400;letter-spacing:-.015em;line-height:1.02;}
 .exhibit-title .title-name,.exhibit-title .title-kind{font-family:inherit;font-weight:inherit;font-size:inherit;letter-spacing:inherit;}
-.entry-title span{white-space:nowrap}
+.entry-title span,.exhibit-title .title-name,.exhibit-title .title-kind{white-space:normal;overflow-wrap:anywhere}
 @media(max-width:760px){
 .exhibit-title,.entry-title{font-size:clamp(47px,13vw,82px);line-height:.99;}
 .exhibit-title .title-name,.exhibit-title .title-kind,.entry-title span{display:block;}

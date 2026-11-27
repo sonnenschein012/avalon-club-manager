@@ -1,11 +1,15 @@
 import { withFirestoreDeadline } from '../lib/firestoreDeadline';
 import {
-  collection, doc, getDocFromServer, getDocsFromServer, limit, onSnapshot, query, where, runTransaction, writeBatch, type DocumentData, type DocumentReference,
+  collection, deleteField, doc, getDocFromServer, getDocsFromServer, limit, onSnapshot, query, where, runTransaction,
+  serverTimestamp, Timestamp, writeBatch, type DocumentData, type DocumentReference,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { commitBatchesInChunks } from '../lib/chunkBatch';
 import { buildExhibitionCollection, type ExhibitionPeriod } from '../domain/exhibition/collection';
-import { automaticExhibitionPins, resolveExhibitionPins } from '../domain/exhibition/gameMapping';
+import {
+  defaultExhibitionPin, exhibitionPins, exhibitionPublicationWindow, fallbackExhibitionPin,
+  type ExhibitionCopy, type ExhibitionSchedule, type ExhibitionVisibility,
+} from '../domain/exhibition/presentation';
 import { normalizeStudentYear } from '../domain/members/memberIdentity';
 import { exhibitionRevisionRef, requestExhibitionRefresh } from './exhibitionRevision';
 import type { Member, Session } from '../types';
@@ -15,6 +19,10 @@ export interface ExhibitionSettings {
   period: ExhibitionPeriod;
   gameMapping: { sourceId: string; pinId: string }[];
   descriptions?: Record<string, string>;
+  images?: Record<string, string>;
+  copy?: ExhibitionCopy;
+  visibility?: ExhibitionVisibility;
+  schedule?: ExhibitionSchedule;
 }
 
 export async function loadExhibitionSettings(exhibitionId: string) {
@@ -31,6 +39,8 @@ export async function loadExhibitionStatus(exhibitionId: string) {
     pending: Number(source.data()?.revision ?? 0) > Number(progress.data()?.revision ?? 0),
     unmappedGameIds: (diagnostics.data()?.unmappedGameIds ?? []) as string[],
     missingMemberIds: (diagnostics.data()?.missingMemberIds ?? []) as string[],
+    lastSyncedAt: (diagnostics.data()?.syncedAt as Timestamp | undefined)?.toDate(),
+    profileCount: diagnostics.data()?.profileCount as number | undefined,
   };
 }
 
@@ -40,18 +50,48 @@ export async function retryExhibitionRefresh() {
   await withFirestoreDeadline(() => batch.commit());
 }
 
+function publicationWindow(settings: ExhibitionSettings) {
+  if (settings.visibility !== 'temporary') return null;
+  const window = settings.schedule && exhibitionPublicationWindow(settings.schedule);
+  if (!window) throw new Error('Invalid exhibition publication window');
+  return { startsAt: Timestamp.fromDate(window.start), endsAt: Timestamp.fromDate(window.end) };
+}
+
+function recordSettingsKey(settings: ExhibitionSettings) {
+  const period = settings.period;
+  return JSON.stringify([
+    period.kind, period.kind === 'semester' ? period.semester : '',
+    period.kind === 'range' ? [period.start, period.end] : [],
+    settings.visibility ?? 'public', settings.schedule?.start, settings.schedule?.end,
+    settings.gameMapping.map(({ sourceId, pinId }) => [sourceId, pinId] as const).sort(([left], [right]) => left.localeCompare(right)),
+  ]);
+}
+
 export async function saveExhibitionSettings(exhibitionId: string, settings: ExhibitionSettings) {
   const access = doc(db, 'exhibitionAccess', exhibitionId);
-  await withFirestoreDeadline(signal => runTransaction(db, async transaction => {
-    const current = settings.enabled ? (await transaction.get(access)).data() : undefined;
+  const settingsRef = doc(db, 'exhibitionSettings', exhibitionId);
+  const window = publicationWindow(settings);
+  return withFirestoreDeadline(signal => runTransaction(db, async transaction => {
+    const [saved, current] = await Promise.all([transaction.get(settingsRef), transaction.get(access)]);
     signal.throwIfAborted();
-    transaction.set(doc(db, 'exhibitionSettings', exhibitionId), settings);
+    const previous = saved.data() as ExhibitionSettings | undefined;
+    const needsSync = settings.enabled && (!previous?.enabled || !current.data()?.generationId ||
+      recordSettingsKey(previous) !== recordSettingsKey(settings));
+    transaction.set(settingsRef, settings);
+    if (settings.copy) transaction.set(doc(db, 'exhibitionCopy', exhibitionId), { copy: settings.copy });
+    transaction.set(doc(db, 'exhibitionPinAppearance', exhibitionId), {
+      descriptions: settings.descriptions ?? {}, images: settings.images ?? {},
+    });
     if (!settings.enabled) {
       transaction.set(access, { enabled: false, generationId: '' });
-    } else if (current?.enabled && current.generationId) {
-      transaction.update(access, { descriptions: settings.descriptions ?? {} });
+    } else if (current.data()?.enabled && current.data()?.generationId) {
+      transaction.update(access, {
+        descriptions: settings.descriptions ?? {},
+        ...(window ?? { startsAt: deleteField(), endsAt: deleteField() }),
+      });
     }
-    requestExhibitionRefresh(transaction);
+    if (needsSync || (previous?.enabled && !settings.enabled)) requestExhibitionRefresh(transaction);
+    return needsSync;
   }));
 }
 
@@ -61,10 +101,11 @@ async function pruneSupersededGenerations(exhibitionIds: string[], signal: Abort
     signal.throwIfAborted();
     const access = doc(db, 'exhibitionAccess', exhibitionId);
     const current = (await getDocFromServer(access)).data();
-    if (!current?.enabled || !/^[1-9][0-9]*$/.test(current.generationId)) continue;
+    const activeRevision = /^(?:v2-)?([1-9][0-9]*)$/.exec(current?.generationId ?? '')?.[1];
+    if (!current?.enabled || !activeRevision) continue;
 
     const obsolete = await getDocsFromServer(query(collection(access, 'generations'),
-      where('revision', '<', Number(current.generationId)), limit(3)));
+      where('revision', '<', Number(activeRevision)), limit(3)));
     for (const generation of obsolete.docs) {
       const entries = await Promise.all(['names', 'profiles'].map(kind =>
         getDocsFromServer(collection(generation.ref, kind))));
@@ -143,9 +184,9 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
     id: snapshot.id,
     title: String(snapshot.data().title ?? ''),
   }));
-  const automaticPins = automaticExhibitionPins(games);
+  const defaults = new Map(games.map(({ id, title }) => [id, defaultExhibitionPin(id, title)]));
   const payload = new TextEncoder().encode(JSON.stringify([sessions, members, games]));
-  const fingerprint = 'projection-v2:' + Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', payload)),
+  const fingerprint = 'projection-v3:' + Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', payload)),
     byte => byte.toString(16).padStart(2, '0')).join('');
   reportStep('변경 확인');
   signal.throwIfAborted();
@@ -181,14 +222,22 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
     unmappedGameIds: string[];
     missingMemberIds: string[];
     descriptions: Record<string, string>;
+    window: ReturnType<typeof publicationWindow>;
+    profileCount: number;
   }[] = [];
   for (const snapshot of active) {
-    const { period, gameMapping, descriptions = {} } = snapshot.data() as ExhibitionSettings;
+    const settings = snapshot.data() as ExhibitionSettings;
+    const { period, gameMapping, descriptions = {} } = settings;
     const excluded = new Set(gameMapping.filter(({ pinId }) => pinId === '').map(({ sourceId }) => sourceId));
+    const mapping = new Map(defaults);
+    for (const { sourceId, pinId } of gameMapping) {
+      if (Object.hasOwn(exhibitionPins, pinId) || pinId === fallbackExhibitionPin(sourceId)) mapping.set(sourceId, pinId);
+      else mapping.delete(sourceId);
+    }
     const titlesWithoutPins = new Map(games.filter(game => game.title.trim() && !excluded.has(game.id))
       .map(({ id, title }) => [id, title.trim()]));
     const result = await buildExhibitionCollection(snapshot.id, period, sessions, members,
-      resolveExhibitionPins(automaticPins, gameMapping), titlesWithoutPins);
+      mapping, titlesWithoutPins);
     const access = doc(db, 'exhibitionAccess', snapshot.id);
     operations.push({ ref: doc(access, 'generations', generationId), data: { revision } });
     for (const kind of ['names', 'profiles'] as const) {
@@ -198,7 +247,7 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
     }
     changes.push({ access, diagnostics: doc(db, 'exhibitionDiagnostics', snapshot.id),
       unmappedGameIds: result.unmappedGameIds.filter(id => !excluded.has(id)),
-      missingMemberIds: result.missingMemberIds, descriptions });
+      missingMemberIds: result.missingMemberIds, descriptions, window: publicationWindow(settings), profileCount: result.profiles.size });
   }
   reportStep('전시 데이터 저장');
   // Each chunk checks the revision in its transaction so a superseded worker
@@ -224,9 +273,9 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
     signal.throwIfAborted();
     if (current.data()?.revision !== revision) return false;
     if (Number(applied.data()?.revision ?? 0) >= revision) return true;
-    for (const { access, diagnostics, unmappedGameIds, missingMemberIds, descriptions } of changes) {
-      transaction.set(access, { enabled: true, generationId, descriptions });
-      transaction.set(diagnostics, { revision, unmappedGameIds, missingMemberIds });
+    for (const { access, diagnostics, unmappedGameIds, missingMemberIds, descriptions, window, profileCount } of changes) {
+      transaction.set(access, { enabled: true, generationId, descriptions, ...window });
+      transaction.set(diagnostics, { revision, unmappedGameIds, missingMemberIds, profileCount, syncedAt: serverTimestamp() });
     }
     transaction.set(progressRef, { revision });
     return true;

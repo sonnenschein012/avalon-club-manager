@@ -1,10 +1,13 @@
 import games from './games.json';
 import { placeRankedPins } from './pin-layout.js';
 import { exhibitionGames, rankedCompanions, rankedGames } from '../src/domain/exhibition/collection';
-import { exhibitionErrorMessage, findExhibitionMembers, loadExhibitionView, loadExhibitionDescriptions } from './data';
+import { exhibitionCopy, exhibitionImageUrl } from '../src/domain/exhibition/presentation';
+import {
+  exhibitionErrorMessage, findExhibitionMembers, loadExhibitionView, loadExhibitionDescriptions,
+  watchExhibitionPublication, watchExhibitionCopy, watchExhibitionAppearance,
+} from './data';
 
 const pinAssets = import.meta.glob('./assets/pins/*.webp', { eager: true, query: '?url', import: 'default' });
-const gameTieRanks = new Map(Object.keys(games).map(id => [id, Math.random()]));
 const main = document.getElementById('main');
 const footer = document.getElementById('collection-footer');
 const objectDialog = document.getElementById('object-dialog');
@@ -12,7 +15,7 @@ const week = ['일', '월', '화', '수', '목', '금', '토'];
 const esc = value => String(value).replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const icon = id => '<svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#'+id+'"/></svg>';
-const asset = id => pinAssets[`./assets/pins/${id}.webp`];
+const asset = id => exhibitionImageUrl(profile?.images?.[id]) ?? pinAssets[`./assets/pins/${id}.webp`];
 const dayOf = date => week[new Date(date + 'T12:00:00Z').getUTCDay()];
 const dateText = date => {
   const [year, month, day] = date.split('-');
@@ -30,28 +33,49 @@ let showLabels = true;
 let objectTrigger;
 let lastOpenPin = '';
 let entryRequest = 0;
+let copy = { ...exhibitionCopy };
+let publicationSubscription;
+let appearanceSubscription;
+let pinAppearance;
+let publicationTimer;
 
 function intro(){
-  const title="My Collection";
+  const title = copy.collectionTitle;
   const split=title.lastIndexOf(" ");
-  return '<header class="exhibit-intro"><h1 class="exhibit-title" lang="en"><span class="title-name">'+esc(title.slice(0,split))+'</span> <span class="title-kind">'+esc(title.slice(split+1))+'</span></h1></header>';
+  return '<header class="exhibit-intro"><h1 class="exhibit-title">'+(split === -1 ? esc(title) :
+    '<span class="title-name">'+esc(title.slice(0,split))+'</span> <span class="title-kind">'+esc(title.slice(split+1))+'</span>')+'</h1></header>';
 }
 
 function gameItem(id) {
   if (Object.hasOwn(games, id)) return games[id];
-  const title = (profile?.data.gameTitles ?? {})[id];
-  return /^game-[a-f0-9]{64}$/.test(id) && title ? { ko: title, pending: true, unillustrated: true } : null;
+  const title = profile?.data.gameTitles?.[id] ?? profile?.gameTitles?.[id];
+  return /^game-[a-f0-9]+$/.test(id) && title ? { ko: title, pending: true, unillustrated: true } : null;
 }
 
 function scatterPin(id) {
   const item=gameItem(id);
-  const art=item.pending?'<span class="pending-art" aria-hidden="true"><span>+</span><small>'+
-    (item.unillustrated?'기록':'제작 예정')+'</small></span>':'<img src="'+asset(id)+'" alt="" draggable="false" loading="lazy" decoding="async">';
+  const custom = exhibitionImageUrl(profile.images[id]);
+  const art=item.pending&&!custom?'<span class="pending-art" aria-hidden="true"><span>+</span><small>'+
+    esc(item.unillustrated ? copy.fallbackPin : '제작 예정')+'</small></span>':'<img src="'+esc(asset(id))+'" alt="" draggable="false" loading="lazy" decoding="async">';
   return '<button type="button" class="pin scatter-pin'+(item.pending?' pending-pin':'')+'" aria-label="'+esc(item.ko)+' 함께한 날 보기" data-pin="'+id+'">'+art+'<span class="pin-label">'+esc(item.ko)+'</span></button>';
 }
 function showEntry(){
-  document.title="Your Collection";
-  main.innerHTML='<section class="entry"><h1 class="entry-title" lang="en"><span>Your</span> <span>Collection</span></h1><form id="name-form" class="name-form"><p class="entry-edition" lang="en">AVALON / VOL. 06</p><div class="name-input-row"><input id="member-name" name="name" type="text" autocomplete="off" maxlength="30" required aria-label="이름을 입력해 주세요" placeholder="이름을 입력해 주세요"><button type="submit" class="entry-submit" aria-label="컬렉션 열기"><svg aria-hidden="true" width="23" height="19" viewBox="0 0 29 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12H24m-6-6 6 6-6 6"/></svg></button></div><p id="entry-error" role="status"></p><div id="name-matches"></div></form></section>';
+  main.innerHTML='<section class="entry"><h1 class="entry-title"></h1><form id="name-form" class="name-form"><p class="entry-edition"></p><div class="name-input-row"><input id="member-name" name="name" type="text" autocomplete="off" maxlength="30" required><button type="submit" class="entry-submit" aria-label="컬렉션 열기"><svg aria-hidden="true" width="23" height="19" viewBox="0 0 29 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12H24m-6-6 6 6-6 6"/></svg></button></div><p id="entry-error" role="status"></p><div id="name-matches"></div></form></section>';
+  updateEntryCopy();
+}
+
+function updateEntryCopy() {
+  const title = main.querySelector('.entry-title');
+  const edition = main.querySelector('.entry-edition');
+  const input = main.querySelector('#member-name');
+  if (!title || !edition || !input) return;
+  document.title = copy.entryTitle;
+  const split = copy.entryTitle.lastIndexOf(' ');
+  title.innerHTML = split < 0 ? esc(copy.entryTitle) :
+    '<span>'+esc(copy.entryTitle.slice(0,split))+'</span> <span>'+esc(copy.entryTitle.slice(split+1))+'</span>';
+  edition.textContent = copy.edition;
+  input.placeholder = copy.namePrompt;
+  input.setAttribute('aria-label', copy.namePrompt);
 }
 
 function readRoute() {
@@ -88,7 +112,7 @@ function archive(state) {
   const { id, date, dates, companions, companion } = state;
   if (!dates.length) return '';
   const companionId = companion?.profileId || '';
-  const all = `<a class="archive-date all-dates" href="${formPath(id, '', companionId)}" ${date ? '' : 'aria-current="true"'}><span>전체</span></a>`;
+  const all = `<a class="archive-date all-dates" href="${formPath(id, '', companionId)}" ${date ? '' : 'aria-current="true"'}><span>${esc(copy.allDates)}</span></a>`;
   const datesHtml = dates.map(day => {
     const path = formPath(id, day.date, companionId);
     const active = day.date === date ? 'aria-current="date"' : '';
@@ -98,12 +122,12 @@ function archive(state) {
     const active = person.profileId === companionId ? 'aria-current="true"' : '';
     return `<li><a href="${formPath(id, '', person.profileId)}" ${active}>${esc(person.name)}</a></li>`;
   }).join('');
-  const peopleLabel = date ? '같은 조에 있었던 사람' : '함께 플레이한 사람';
+  const peopleLabel = date ? copy.groupLabel : copy.companionsLabel;
   const peopleClass = date ? 'archive-people archive-people-before-dates' : 'archive-people';
   const peopleSection = people
-    ? `<div class="${peopleClass}"><span class="archive-people-label">${peopleLabel}</span><ul>${people}</ul></div>`
+    ? `<div class="${peopleClass}"><span class="archive-people-label">${esc(peopleLabel)}</span><ul>${people}</ul></div>`
     : '';
-  const datesSection = '<h2 class="archive-heading">함께한 날</h2>'+
+  const datesSection = '<h2 class="archive-heading">'+esc(copy.archiveTitle)+'</h2>'+
     '<nav class="archive-dates" aria-label="모임 날짜">'+all+datesHtml+'</nav>';
   return '<section class="session-archive" aria-label="세션 기록">'+
     (date ? peopleSection+datesSection : datesSection+peopleSection)+'</section>';
@@ -113,15 +137,15 @@ function collection(state) {
   const ordered = state.gameOrder.filter(id => gameItem(id));
   const pins = ordered.map(scatterPin).join('');
   const companionHeading = state.companion
-    ? `<div class="companion-filter">${esc(state.companion.name)}님과 함께한 게임<a class="text-control" href="${formPath(state.id, state.date)}">필터 해제</a></div>`
+    ? `<div class="companion-filter">${esc(state.companion.name)}님과 함께한 게임<a class="text-control" href="${formPath(state.id, state.date)}">${esc(copy.clearFilter)}</a></div>`
     : '';
-  const empty = '<p class="blank">'+(state.companion ? '함께 플레이한 게임이 기록되어 있지 않습니다.' :
-    state.date ? '이날 플레이한 게임은 기록되어 있지 않습니다.' : '플레이한 게임이 기록되어 있지 않습니다.')+'</p>';
+  const empty = '<p class="blank">'+esc(state.companion ? copy.noCompanionGames :
+    state.date ? copy.noDayGames : copy.noGames)+'</p>';
   return intro()+companionHeading+
     `<section class="works scatter-field ranked-layout${showLabels ? '' : ' labels-off'}" aria-label="보드게임 컬렉션">${pins || empty}</section>`+
     '<div class="board-caption"><p class="caption-hint">'+icon('hand')+
-    '<span>핀을 고르면 함께한 날의 기록이 열립니다.</span></p><button class="text-control label-toggle" type="button" aria-pressed="'+
-    showLabels+'">이름표<span aria-hidden="true" class="label-switch"></span></button></div>'+archive(state);
+    '<span>'+esc(copy.pinHint)+'</span></p><button class="text-control label-toggle" type="button" aria-pressed="'+
+    showLabels+'">'+esc(copy.labelsToggle)+'<span aria-hidden="true" class="label-switch"></span></button></div>'+archive(state);
 }
 
 let laidOutField;
@@ -162,33 +186,38 @@ function renderObject(state) {
   const links = dates.map(date =>
     `<a href="${formPath(state.id, date, companionId)}" aria-label="${esc(dateText(date))} 세션 기록 보기"><time datetime="${esc(date)}">${esc(date.replaceAll('-', '. '))}</time><span class="day">${dayOf(date)}요일</span>${icon('book')}</a>`,
   ).join('');
-  const artwork = item.unillustrated ? '' :
-    '<div class="pin-field"><img src="'+asset(state.pin)+'" alt="'+esc(item.ko)+'의 에나멜 핀"></div>';
+  const image = asset(state.pin);
+  const artwork = image ?
+    '<div class="pin-field"><img src="'+esc(image)+'" alt="'+esc(item.ko)+'의 에나멜 핀"></div>' : '';
   const englishTitle = item.en ? '<p lang="en" class="object-en">'+esc(item.en)+'</p>' : '';
-  const text = item.unillustrated ? '' : '<p class="object-text">'+esc(profile.descriptions[state.pin] || item.motif)+'</p>';
-  objectDialog.innerHTML = '<div class="object-sheet'+(item.unillustrated?' text-only':'')+'"><button type="button" class="modal-close" data-close aria-label="핀 상세 닫기">'+
+  const descriptionText = profile.descriptions[state.pin] || item.motif || '';
+  const text = '<p class="object-text"'+(descriptionText ? '' : ' hidden')+'>'+esc(descriptionText)+'</p>';
+  objectDialog.innerHTML = '<div class="object-sheet'+(image?'':' text-only')+'"><button type="button" class="modal-close" data-close aria-label="핀 상세 닫기">'+
     icon('close')+'</button>'+artwork+'<div class="object-info">'+englishTitle+'<h2 id="object-title">'+esc(item.ko)+
-    '</h2>'+text+'<div class="detail-dates"><h3>함께한 날</h3>'+links+'</div></div></div>';
+    '</h2>'+text+'<div class="detail-dates"><h3>'+esc(copy.archiveTitle)+'</h3>'+links+'</div></div></div>';
   if (!objectDialog.open) objectDialog.showModal();
   document.body.classList.add('dialog-open');
   lastOpenPin = state.pin;
   const description = objectDialog.querySelector('.object-text');
   if (!description) return;
   const displayedProfile = profile;
+  const previousDescriptions = profile.descriptions;
   void loadExhibitionDescriptions().then(descriptions => {
-    if (profile !== displayedProfile || !objectDialog.open || !description.isConnected) return;
+    if (profile !== displayedProfile || profile.descriptions !== previousDescriptions || !objectDialog.open || !description.isConnected) return;
     profile.descriptions = descriptions;
-    description.textContent = descriptions[state.pin] || item.motif;
+    description.textContent = descriptions[state.pin] || item.motif || '';
+    description.hidden = !description.textContent;
   }).catch(() => {
     // Keep the description bundled with the last successfully loaded record.
   });
 }
 
-function render(state) {
+function render(state, replaceRecord = false) {
   footer.hidden = false;
-  document.title = 'My Collection';
+  document.title = copy.collectionTitle;
+  footer.querySelector('a').textContent = copy.anotherName;
   const nextKey = formPath(state.id, state.date, state.companion?.profileId);
-  const changed = nextKey !== baseKey;
+  const changed = nextKey !== baseKey || replaceRecord;
   const onDate = document.activeElement?.matches('.archive-date');
   const onCompanion = document.activeElement?.matches('.archive-people a');
   if (objectDialog.open && !state.pin) objectDialog.close();
@@ -196,12 +225,14 @@ function render(state) {
     main.innerHTML = collection(state);
     layoutPins();
     baseKey = nextKey;
-    if (onDate) main.querySelector('.archive-date[aria-current]')?.focus({ preventScroll: true });
-    else if (onCompanion) main.querySelector('.archive-people a[aria-current]')?.focus({ preventScroll: true });
-    else main.focus({ preventScroll: true });
-    window.scrollTo(0, 0);
+    if (!replaceRecord) {
+      if (onDate) main.querySelector('.archive-date[aria-current]')?.focus({ preventScroll: true });
+      else if (onCompanion) main.querySelector('.archive-people a[aria-current]')?.focus({ preventScroll: true });
+      else main.focus({ preventScroll: true });
+      window.scrollTo(0, 0);
+    }
   }
-  if (state.pin && (!objectDialog.open || lastOpenPin !== state.pin)) {
+  if (state.pin && (!objectDialog.open || lastOpenPin !== state.pin || replaceRecord)) {
     objectTrigger = main.querySelector(`[data-pin="${state.pin}"]`);
     renderObject(state);
   } else if (!state.pin && lastOpenPin) {
@@ -215,6 +246,12 @@ function render(state) {
 
 function resetEntry(message = '') {
   entryRequest++;
+  publicationSubscription?.();
+  publicationSubscription = undefined;
+  appearanceSubscription?.();
+  appearanceSubscription = undefined;
+  pinAppearance = undefined;
+  clearTimeout(publicationTimer);
   profile = current = laidOutField = undefined;
   baseKey = lastOpenPin = '';
   objectTrigger = undefined;
@@ -226,33 +263,90 @@ function resetEntry(message = '') {
   window.scrollTo(0, 0);
 }
 
-async function refresh() {
+function updatePinDescriptions(descriptions) {
+  profile.descriptions = descriptions;
+  const description = objectDialog.querySelector('.object-text');
+  if (objectDialog.open && description && current?.pin) {
+    description.textContent = descriptions[current.pin] || gameItem(current.pin)?.motif || '';
+    description.hidden = !description.textContent;
+  }
+}
+
+function showUnavailable() {
+  history.replaceState(null, '', '#');
+  resetEntry(copy.unpublished);
+}
+
+function trackPublicationEnd(endsAt) {
+  clearTimeout(publicationTimer);
+  if (!Number.isFinite(endsAt)) return;
+  const remaining = endsAt - Date.now();
+  if (remaining <= 0) return showUnavailable();
+  publicationTimer = setTimeout(() => trackPublicationEnd(endsAt), Math.min(remaining, 2_147_000_000));
+}
+
+function watchPublishedRecord() {
+  if (publicationSubscription) return;
+  publicationSubscription = watchExhibitionPublication(update => {
+    if (!profile || readRoute()?.id !== profile.id) return;
+    if (!update) return showUnavailable();
+    trackPublicationEnd(update.endsAt);
+    if (update.id !== profile?.generationId) {
+      void refresh(true);
+    } else updatePinDescriptions(pinAppearance?.descriptions ?? update.descriptions);
+  });
+  appearanceSubscription = watchExhibitionAppearance(update => {
+    const route = readRoute();
+    if (!profile || route?.id !== profile.id) return;
+    pinAppearance = update;
+    const imagesChanged = JSON.stringify(profile.images) !== JSON.stringify(update.images);
+    profile.images = update.images;
+    updatePinDescriptions(update.descriptions);
+    if (imagesChanged) render(makeState(route), true);
+  });
+}
+
+async function refresh(revalidate = false) {
   const route = readRoute();
   if (!route) {
     resetEntry();
     return;
   }
-  if (profile?.id === route.id) {
+  const previous = profile?.id === route.id ? profile : undefined;
+  if (previous && !revalidate) {
     render(makeState(route));
     return;
   }
   const request = ++entryRequest;
-  if (objectDialog.open) objectDialog.close();
-  document.body.classList.remove('dialog-open');
-  footer.hidden = true;
-  main.innerHTML = '<p class="blank" role="status">기록을 불러오는 중입니다.</p>';
+  if (!previous) {
+    if (objectDialog.open) objectDialog.close();
+    document.body.classList.remove('dialog-open');
+    footer.hidden = true;
+    main.innerHTML = '<p class="blank" role="status">'+esc(copy.loadingRecord)+'</p>';
+  }
   try {
-    const { record: data, descriptions } = await loadExhibitionView(route.id);
-    if (request !== entryRequest) return;
+    const { record: data, generationId, descriptions, images = {}, gameTitles = {}, endsAt } = await loadExhibitionView(route.id);
+    const latestRoute = readRoute();
+    if (request !== entryRequest || latestRoute?.id !== route.id) return;
     if (!data) {
       history.replaceState(null, '', '#');
-      resetEntry('이 기록을 찾지 못했습니다.');
+      resetEntry(copy.missingRecord);
       return;
     }
-    profile = { id: route.id, data, descriptions, gameOrder: rankedGames(data.days, gameTieRanks) };
-    render(makeState(route));
+    if (previous && previous.generationId === generationId) {
+      updatePinDescriptions(pinAppearance?.descriptions ?? descriptions);
+      trackPublicationEnd(endsAt);
+      return;
+    }
+    profile = { id: route.id, generationId, data, gameTitles, images: pinAppearance?.images ?? images,
+      descriptions: pinAppearance?.descriptions ?? descriptions, gameOrder: rankedGames(data.days) };
+    render(makeState(latestRoute), Boolean(previous));
+    trackPublicationEnd(endsAt);
+    if (!profile) return;
+    watchPublishedRecord();
   } catch (error) {
     if (request !== entryRequest) return;
+    if (previous) return;
     history.replaceState(null, '', '#');
     resetEntry(exhibitionErrorMessage(error));
   }
@@ -279,7 +373,7 @@ document.addEventListener('submit', async event => {
   const choices = document.getElementById('name-matches');
   const input = document.getElementById('member-name');
   choices.replaceChildren();
-  error.textContent = '기록을 확인하는 중입니다.';
+  error.textContent = copy.checkingName;
   try {
     const matches = await findExhibitionMembers(input.value);
     if (request !== entryRequest) return;
@@ -289,8 +383,7 @@ document.addEventListener('submit', async event => {
       return;
     }
     error.textContent = matches.length
-      ? '같은 이름의 기록이 있어 해당 항목을 선택해 주세요.'
-      : '기록에서 해당 이름을 찾지 못했습니다. 이름을 다시 확인해 주세요.';
+      ? copy.sameName : copy.noNameMatch;
     const counts = new Map();
     for (const match of matches) counts.set(match.yearLabel, (counts.get(match.yearLabel) || 0) + 1);
     matches.forEach(({ profileId, yearLabel }, index) => {
@@ -343,4 +436,15 @@ objectDialog.addEventListener('click', event => {
 });
 window.addEventListener('popstate', () => { void refresh(); });
 window.addEventListener('hashchange', () => { void refresh(); });
+window.addEventListener('focus', () => {
+  if (profile && profile.id === readRoute()?.id) void refresh(true);
+});
+watchExhibitionCopy(value => {
+  const updated = { ...exhibitionCopy, ...value };
+  if (JSON.stringify(copy) === JSON.stringify(updated)) return;
+  copy = updated;
+  const route = readRoute();
+  if (profile && route?.id === profile.id) render(makeState(route), true);
+  else updateEntryCopy();
+});
 void refresh();
