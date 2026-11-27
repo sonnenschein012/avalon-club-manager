@@ -394,7 +394,12 @@ describe('Firestore Security Rules', () => {
         const path = `exhibitionAccess/avalon/generations/${updated}/names/${key}`;
         expect((await getDoc(doc(operator, path))).exists()).toBe(true);
       }, { timeout: 10_000, interval: 300 });
-      expect((await getDoc(marker)).data()?.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      const currentMarker = (await getDoc(marker)).data();
+      expect(currentMarker?.fingerprint).toMatch(/^projection-v2:[a-f0-9]{64}$/);
+      await assertFails(setDoc(marker, {
+        revision: Number(currentMarker?.revision) + 1,
+        fingerprint: 'f'.repeat(64),
+      }));
       await updateSessionGroupGames('live', 'group', ['new-game']);
       await vi.waitFor(async () => {
         expect((await loadExhibitionStatus('avalon')).unmappedGameIds).toEqual(['new-game']);

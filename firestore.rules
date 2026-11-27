@@ -390,8 +390,11 @@ service cloud.firestore {
         request.resource.data.keys().hasOnly(id == 'source' ? ['revision', 'fingerprint'] : ['revision']) &&
         request.resource.data.get('fingerprint', '') is string &&
         request.resource.data.revision is int && request.resource.data.revision > 0 &&
-        (id == 'progress' || request.resource.data.revision ==
-          (resource == null ? 1 : resource.data.revision + 1));
+        (id == 'progress' || (request.resource.data.revision ==
+          (resource == null ? 1 : resource.data.revision + 1) &&
+          // An old browser must not republish a generation without game titles.
+          (resource == null || !resource.data.get('fingerprint', '').matches('projection-v2:.*') ||
+            request.resource.data.get('fingerprint', '').matches('projection-v2:[a-f0-9]{64}'))));
     }
 
     match /exhibitionSettings/{id} {

@@ -145,7 +145,7 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
   }));
   const automaticPins = automaticExhibitionPins(games);
   const payload = new TextEncoder().encode(JSON.stringify([sessions, members, games]));
-  const fingerprint = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', payload)),
+  const fingerprint = 'projection-v2:' + Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', payload)),
     byte => byte.toString(16).padStart(2, '0')).join('');
   reportStep('변경 확인');
   signal.throwIfAborted();
