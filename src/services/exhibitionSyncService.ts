@@ -5,7 +5,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { commitBatchesInChunks } from '../lib/chunkBatch';
-import { buildExhibitionCollection, type ExhibitionPeriod } from '../domain/exhibition/collection';
+import { buildExhibitionCollection, type ExhibitionPeriod, type ExhibitionProfile } from '../domain/exhibition/collection';
 import {
   defaultExhibitionPin, exhibitionPins, exhibitionPublicationWindow, fallbackExhibitionPin, isExhibitionImageUpload, maxExhibitionImageBytes,
   type ExhibitionCopy, type ExhibitionSchedule, type ExhibitionVisibility,
@@ -31,21 +31,45 @@ export async function loadExhibitionSettings(exhibitionId: string) {
 }
 
 export async function loadExhibitionStatus(exhibitionId: string) {
-  const [source, progress, diagnostics, access] = await Promise.all([
+  const [source, progress, diagnostics, access] = await withFirestoreDeadline(() => Promise.all([
     getDocFromServer(exhibitionRevisionRef()), getDocFromServer(doc(db, 'exhibitionSync', 'progress')),
     getDocFromServer(doc(db, 'exhibitionDiagnostics', exhibitionId)),
     getDocFromServer(doc(db, 'exhibitionAccess', exhibitionId)),
-  ]);
+  ]));
+  const active = access.data();
+  const diagnostic = diagnostics.data();
+  const generationId = active?.enabled === true && typeof active.generationId === 'string' && active.generationId
+    ? active.generationId : undefined;
   return {
     pending: Number(source.data()?.revision ?? 0) > Number(progress.data()?.revision ?? 0),
     unmappedGameIds: (diagnostics.data()?.unmappedGameIds ?? []) as string[],
     missingMemberIds: (diagnostics.data()?.missingMemberIds ?? []) as string[],
     lastSyncedAt: (diagnostics.data()?.syncedAt as Timestamp | undefined)?.toDate(),
     profileCount: diagnostics.data()?.profileCount as number | undefined,
-    published: access.data()?.enabled === true && Boolean(access.data()?.generationId),
+    published: Boolean(generationId),
+    generationId,
+    publishedGameKeys: generationId && String(diagnostic?.revision) === generationId && Array.isArray(diagnostic?.publishedGameKeys)
+      ? diagnostic.publishedGameKeys as string[] : undefined,
     startsAt: (access.data()?.startsAt as Timestamp | undefined)?.toDate(),
     endsAt: (access.data()?.endsAt as Timestamp | undefined)?.toDate(),
   };
+}
+
+function gameKeysInProfiles(profiles: Iterable<ExhibitionProfile>) {
+  const keys = new Set<string>();
+  for (const profile of profiles) for (const day of profile.days) {
+    for (const id of day.gameIds) keys.add(id);
+  }
+  return [...keys].sort();
+}
+
+export async function loadPublishedExhibitionGameKeys(exhibitionId: string, generationId: string) {
+  const profiles = collection(db, 'exhibitionAccess', exhibitionId, 'generations', generationId, 'profiles');
+  return withFirestoreDeadline(async signal => {
+    const snapshot = await getDocsFromServer(profiles);
+    signal.throwIfAborted();
+    return gameKeysInProfiles(snapshot.docs.map(profile => profile.data() as ExhibitionProfile));
+  });
 }
 
 export async function retryExhibitionRefresh() {
@@ -247,6 +271,7 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
     descriptions: Record<string, string>;
     window: ReturnType<typeof publicationWindow>;
     profileCount: number;
+    publishedGameKeys: string[];
   }[] = [];
   for (const snapshot of active) {
     const settings = snapshot.data() as ExhibitionSettings;
@@ -270,7 +295,8 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
     }
     changes.push({ access, diagnostics: doc(db, 'exhibitionDiagnostics', snapshot.id),
       unmappedGameIds: result.unmappedGameIds.filter(id => !excluded.has(id)),
-      missingMemberIds: result.missingMemberIds, descriptions, window: publicationWindow(settings), profileCount: result.profiles.size });
+      missingMemberIds: result.missingMemberIds, descriptions, window: publicationWindow(settings), profileCount: result.profiles.size,
+      publishedGameKeys: gameKeysInProfiles(result.profiles.values()) });
   }
   reportStep('전시 데이터 저장');
   // Each chunk checks the revision in its transaction so a superseded worker
@@ -296,9 +322,9 @@ async function reconcile(signal: AbortSignal, reportStep: (step: SyncStep) => vo
     signal.throwIfAborted();
     if (current.data()?.revision !== revision) return false;
     if (Number(applied.data()?.revision ?? 0) >= revision) return true;
-    for (const { access, diagnostics, unmappedGameIds, missingMemberIds, descriptions, window, profileCount } of changes) {
+    for (const { access, diagnostics, unmappedGameIds, missingMemberIds, descriptions, window, profileCount, publishedGameKeys } of changes) {
       transaction.set(access, { enabled: true, generationId, descriptions, ...window });
-      transaction.set(diagnostics, { revision, unmappedGameIds, missingMemberIds, profileCount, syncedAt: serverTimestamp() });
+      transaction.set(diagnostics, { revision, unmappedGameIds, missingMemberIds, profileCount, publishedGameKeys, syncedAt: serverTimestamp() });
     }
     transaction.set(progressRef, { revision });
     return true;

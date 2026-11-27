@@ -6,14 +6,21 @@ const companionId = 'b'.repeat(64);
 const otherId = 'c'.repeat(64);
 const api = vi.hoisted(() => ({
   find: vi.fn(), load: vi.fn(), generation: '1',
+  prime: vi.fn(),
+  viewBudget: vi.fn(),
   loadImage: vi.fn(),
   appearance: undefined as ((notice: { descriptions: Record<string, string>; images: Record<string, string> }) => void) | undefined,
   publication: undefined as ((notice: { id: string; descriptions: Record<string, string> }) => void) | undefined,
   copy: undefined as ((notice: Record<string, string>) => void) | undefined,
 }));
 vi.mock('../../exhibition/data', () => ({
+  exhibitionLookupBudget: 3_000,
+  primeExhibitionNameLookup: api.prime,
   findExhibitionMembers: api.find,
-  loadExhibitionView: async (id: string) => ({ record: await api.load(id), generationId: api.generation, descriptions: { avalon: '전시 설명' } }),
+  loadExhibitionView: async (id: string, _publication: unknown, budget: number | undefined) => {
+    api.viewBudget(budget);
+    return { record: await api.load(id), generationId: api.generation, descriptions: { avalon: '전시 설명' } };
+  },
   loadExhibitionPinImage: api.loadImage,
   watchExhibitionPublication: (callback: typeof api.publication) => { api.publication = callback; return () => {}; },
   watchExhibitionCopy: (callback: typeof api.copy) => { api.copy = callback; return () => {}; },
@@ -107,9 +114,34 @@ describe('public exhibition view', () => {
     api.copy?.({ loadError: '전시 조회 실패' });
     submitName('다시 시도');
     await vi.waitFor(() => expect(document.querySelector('#entry-error')?.textContent).toBe('전시 조회 실패'));
+    const retry = document.querySelector('.entry-retry');
+    expect(retry?.getAttribute('aria-label')).toBe('다시 시도');
+    expect(retry?.textContent).toBe('');
+    expect(retry?.querySelector('use')?.getAttribute('href')).toBe('#retry');
+    expect(document.querySelector<HTMLInputElement>('#member-name')?.value).toBe('다시 시도');
     api.find.mockResolvedValueOnce([]);
     click('.entry-retry');
     await vi.waitFor(() => expect(document.querySelector('#entry-error')?.textContent).toContain('찾지 못했습니다'));
+  });
+
+  it('keeps one skeleton from name submission through reading a single matching collection', async () => {
+    let finishName!: (value: { profileId: string }[]) => void;
+    let finishRecord!: (value: { name: string; days: [] }) => void;
+    api.find.mockReturnValueOnce(new Promise(resolve => { finishName = resolve; }));
+    api.load.mockReturnValueOnce(new Promise(resolve => { finishRecord = resolve; }));
+    submitName('합성 부원');
+    const frame = document.querySelector('.collection-skeleton');
+    expect(frame).not.toBeNull();
+    expect(document.querySelector('[data-loading-copy]')?.textContent).toBe('기록을 확인하는 중입니다.');
+    expect(document.querySelector('#member-name')).toBeNull();
+    finishName([{ profileId }]);
+    await vi.waitFor(() => expect(document.querySelector('[data-loading-copy]')?.textContent).toBe('기록을 불러오는 중입니다.'));
+    expect(document.querySelector('.collection-skeleton')).toBe(frame);
+    const budget = api.viewBudget.mock.lastCall?.[0];
+    expect(budget).toBeGreaterThan(0);
+    expect(budget).toBeLessThanOrEqual(3_000);
+    finishRecord({ name: '합성 부원', days: [] });
+    await vi.waitFor(() => expect(document.querySelector('.collection-skeleton')).toBeNull());
   });
 
   it('shows the name and date for a recorded game without a pin image', async () => {
@@ -129,6 +161,8 @@ describe('public exhibition view', () => {
   it('updates entry text without clearing the form and refreshes a published collection already on screen', async () => {
     const input = document.querySelector<HTMLInputElement>('#member-name')!;
     input.value = '합성 부원';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(api.prime).toHaveBeenCalledOnce();
     api.copy?.({ entryTitle: '우리가 한 게임', edition: '새 부제', namePrompt: '부원 이름을 적어 주세요' });
     expect(document.querySelector('.entry-title')?.textContent).toBe('우리가 한 게임');
     expect(document.querySelector('.entry-edition')?.textContent).toBe('새 부제');

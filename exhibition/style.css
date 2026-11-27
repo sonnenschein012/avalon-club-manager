@@ -144,11 +144,20 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible{outline:2px solid 
 .sample-choice[aria-current="true"] .sample-name strong{color:var(--raspberry)}
 .sample-state{margin-left:auto;color:var(--raspberry);display:flex;align-items:center;gap:4px;font-size:12px}
 .sample-state svg{width:14px;height:14px}
-.record-loading{min-height:100svh;margin:0;display:grid;place-content:center;justify-items:center;gap:12px;text-align:center;color:var(--muted)}
-html:has(.record-loading){scrollbar-gutter:auto}
-.record-loading-indicator{width:16px;height:16px;border:1px solid var(--line);border-top-color:var(--muted);border-radius:50%;animation:record-loading-spin 1s linear infinite}
-@keyframes record-loading-spin{to{transform:rotate(1turn)}}
-@media(prefers-reduced-motion:reduce){.record-loading-indicator{animation:none}}
+.collection-skeleton{margin-inline:auto;max-width:1110px;padding-top:18px;animation:skeleton-pulse 1.5s ease-in-out infinite alternate}
+.skeleton-pins{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:clamp(12px,3.5vw,36px);min-height:clamp(126px,24vw,200px);max-width:680px;margin:auto}
+.skeleton-pins span{width:clamp(64px,13vw,110px);aspect-ratio:1;border-radius:50%;background:#ded5cd}
+.skeleton-pins span:nth-child(2n){width:clamp(57px,11vw,90px)}
+.skeleton-pins span:last-child{width:clamp(48px,10vw,80px)}
+@media(max-width:480px){.skeleton-pins{max-width:260px}}
+.skeleton-archive>span,.skeleton-archive div span{display:block;margin-inline:auto;background:#ded5cd;border-radius:4px}
+.skeleton-archive>span{width:100px;height:16px}
+.skeleton-archive div{display:flex;justify-content:center;gap:clamp(12px,4vw,40px);margin-top:14px}
+.skeleton-archive div span{width:40px;height:12px;margin:0}
+@keyframes skeleton-pulse{from{opacity:.55}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){.collection-skeleton{animation:none}}
+.entry-retry{width:44px;min-height:44px;padding:0}
+.entry-retry .icon{width:20px;height:20px}
 .collection-empty{width:100%;margin:0;padding:24px 12px;text-align:center;color:var(--muted)}
 @media(min-width:1650px){.plate{aspect-ratio:2.84}.pin-label{font-size:15px}.caption-hint,.text-control{font-size:16px}}
 @media(min-width:761px) and (max-width:1000px){.plate{aspect-ratio:2.45;min-height:0}.exhibit-intro aside{gap:12px}.seal{width:52px;height:52px}.intro-copy{font-size:14px}.record-layout{grid-template-columns:1fr 1.3fr;gap:20px}.date-index{padding-right:22px}.thumb-well{height:73px;width:75px}}

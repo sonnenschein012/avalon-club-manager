@@ -3,7 +3,7 @@ import { placeRankedPins } from './pin-layout.js';
 import { exhibitionGames, rankedCompanions, rankedGames } from '../src/domain/exhibition/collection';
 import { exhibitionCopy, exhibitionImageUrl, isExhibitionImageUpload } from '../src/domain/exhibition/presentation';
 import {
-  exhibitionErrorMessage, findExhibitionMembers, loadExhibitionView, loadExhibitionPinImage,
+  exhibitionErrorMessage, exhibitionLookupBudget, primeExhibitionNameLookup, findExhibitionMembers, loadExhibitionView, loadExhibitionPinImage,
   watchExhibitionPublication, watchExhibitionCopy, watchExhibitionAppearance,
 } from './data';
 
@@ -279,11 +279,13 @@ function showEntryError(message, retryRoute) {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'text-control entry-retry';
-  button.textContent = '다시 시도';
+  button.setAttribute('aria-label', '다시 시도');
+  button.title = '다시 시도';
+  button.innerHTML = icon('retry');
   document.getElementById('name-matches').append(button);
 }
 
-function resetEntry(message = '', retryRoute) {
+function resetEntry(message = '', retryRoute, name = '') {
   entryRequest++;
   publicationSubscription?.();
   publicationSubscription = undefined;
@@ -301,6 +303,11 @@ function resetEntry(message = '', retryRoute) {
   footer.hidden = true;
   showEntry();
   showEntryError(message, retryRoute);
+  if (name) {
+    const input = document.getElementById('member-name');
+    input.value = name;
+    input.focus({ preventScroll: true });
+  }
   window.scrollTo(0, 0);
 }
 
@@ -347,7 +354,26 @@ function watchPublishedRecord() {
   });
 }
 
-async function refresh(published) {
+function showCollectionLoading(key) {
+  let status = main.querySelector('[data-loading-copy]');
+  if (!status) {
+    footer.hidden = true;
+    main.innerHTML = intro()+
+      '<div class="collection-skeleton" aria-hidden="true">'+
+      '<div class="skeleton-pins">'+
+      '<span></span><span></span><span></span><span></span><span></span>'+
+      '</div><div class="session-archive skeleton-archive"><span></span>'+
+      '<div><span></span><span></span><span></span><span></span></div></div></div>'+
+      '<p class="sr-only" role="status" data-loading-copy></p>';
+    status = main.querySelector('[data-loading-copy]');
+    main.focus({ preventScroll: true });
+    window.scrollTo(0, 0);
+  }
+  status.dataset.loadingCopy = key;
+  status.textContent = copy[key];
+}
+
+async function refresh(published, lookup) {
   const route = readRoute();
   if (!route) {
     resetEntry();
@@ -362,16 +388,17 @@ async function refresh(published) {
   if (!previous) {
     if (objectDialog.open) objectDialog.close();
     document.body.classList.remove('dialog-open');
-    footer.hidden = true;
-    main.innerHTML = '<p class="record-loading" role="status"><span class="record-loading-indicator" aria-hidden="true"></span><span data-loading-copy>'+esc(copy.loadingRecord)+'</span></p>';
+    showCollectionLoading('loadingRecord');
   }
   try {
-    const { record: data, generationId, descriptions, images = {}, gameTitles = {}, endsAt } = await loadExhibitionView(route.id, published);
+    const remaining = lookup?.startedAt === undefined ? undefined :
+      Math.max(1, exhibitionLookupBudget - (performance.now() - lookup.startedAt));
+    const { record: data, generationId, descriptions, images = {}, gameTitles = {}, endsAt } = await loadExhibitionView(route.id, published, remaining);
     const latestRoute = readRoute();
     if (request !== entryRequest || latestRoute?.id !== route.id) return;
     if (!data) {
       history.replaceState(null, '', '#');
-      resetEntry(copy.missingRecord);
+      resetEntry(copy.missingRecord, undefined, lookup?.name);
       return;
     }
     if (previous && previous.generationId === generationId) {
@@ -389,14 +416,14 @@ async function refresh(published) {
     if (request !== entryRequest) return;
     if (previous) return;
     history.replaceState(null, '', '#');
-    resetEntry(exhibitionErrorMessage(error, copy), formPath(route.id, route.date, route.companionId, route.pin));
+    resetEntry(exhibitionErrorMessage(error, copy), formPath(route.id, route.date, route.companionId, route.pin), lookup?.name);
   }
 }
 
-function navigate(href, marker = null, replace = false) {
+function navigate(href, marker = null, replace = false, lookup) {
   if ((location.hash || '#') === href) return;
   history[replace ? 'replaceState' : 'pushState'](marker, '', href);
-  void refresh();
+  void refresh(undefined, lookup);
 }
 
 function closeObject() {
@@ -406,27 +433,26 @@ function closeObject() {
   else navigate(base, null, true);
 }
 
+main.addEventListener('input', event => {
+  if (event.target.id === 'member-name' && event.target.value.trim()) primeExhibitionNameLookup();
+});
+
 document.addEventListener('submit', async event => {
   if (event.target.id !== 'name-form') return;
   event.preventDefault();
   const request = ++entryRequest;
-  const error = document.getElementById('entry-error');
-  const choices = document.getElementById('name-matches');
-  const input = document.getElementById('member-name');
-  delete input.form.dataset.retryRecord;
-  main.querySelector('.entry-retry')?.remove();
-  choices.replaceChildren();
-  error.textContent = copy.checkingName;
+  const name = document.getElementById('member-name').value;
+  const startedAt = performance.now();
+  showCollectionLoading('checkingName');
   try {
-    const matches = await findExhibitionMembers(input.value);
+    const matches = await findExhibitionMembers(name);
     if (request !== entryRequest) return;
-    if (matches.length > 0) input.blur();
     if (matches.length === 1) {
-      navigate(formPath(matches[0].profileId));
+      navigate(formPath(matches[0].profileId), null, false, { name, startedAt });
       return;
     }
-    error.textContent = matches.length
-      ? copy.sameName : copy.noNameMatch;
+    resetEntry(matches.length ? copy.sameName : copy.noNameMatch, undefined, name);
+    const choices = document.getElementById('name-matches');
     const counts = new Map();
     for (const match of matches) counts.set(match.yearLabel, (counts.get(match.yearLabel) || 0) + 1);
     matches.forEach(({ profileId, yearLabel }, index) => {
@@ -438,7 +464,7 @@ document.addEventListener('submit', async event => {
       choices.append(button);
     });
   } catch (cause) {
-    if (request === entryRequest) showEntryError(exhibitionErrorMessage(cause, copy), 'search');
+    if (request === entryRequest) resetEntry(exhibitionErrorMessage(cause, copy), 'search', name);
   }
 });
 
@@ -451,12 +477,15 @@ document.addEventListener('click', event => {
   if (!el) return;
   if (el.closest('.entry-retry')) {
     const form = main.querySelector('#name-form');
-    if (form.dataset.retryRecord) navigate(form.dataset.retryRecord);
+    if (form.dataset.retryRecord) navigate(form.dataset.retryRecord, null, false, { name: form.querySelector('#member-name').value });
     else form.requestSubmit();
     return;
   }
   const member = el.closest('[data-member]');
-  if (member) { navigate(formPath(member.dataset.member)); return; }
+  if (member) {
+    navigate(formPath(member.dataset.member), null, false, { name: document.getElementById('member-name').value });
+    return;
+  }
   if (el.closest('[data-close]')) { closeObject(); return; }
   const pin = el.closest('[data-pin]');
   if (pin && current) {
@@ -494,7 +523,11 @@ watchExhibitionCopy(value => {
   else {
     updateEntryCopy();
     const loading = main.querySelector('[data-loading-copy]');
-    if (loading) loading.textContent = copy.loadingRecord;
+    if (loading) {
+      loading.textContent = copy[loading.dataset.loadingCopy];
+      const heading = main.querySelector('.exhibit-intro');
+      if (heading) heading.outerHTML = intro();
+    }
   }
 });
 void refresh();

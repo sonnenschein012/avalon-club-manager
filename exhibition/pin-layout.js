@@ -1,52 +1,7 @@
 const rotations = [-11, 9, -6, 13, -8, 5, -12, 7, -4, 11, -9, 4];
-const horizontalBias = [.20, .84, .47, .12, .86, .56, .35, .67];
-
-function findPosition(boxes, width, pin, index, fromRight) {
-  const limit = width - pin.halfWidth;
-  const preferred = pin.halfWidth + (limit - pin.halfWidth) * horizontalBias[index % horizontalBias.length];
-  // The vertical order stays the same for every horizontal candidate.
-  const intervals = pin.parts.flatMap(part => boxes.map(box => ({
-    x: box.x,
-    reach: part.halfWidth + box.halfWidth,
-    from: box.top - part.bottom,
-    to: box.bottom - part.top,
-  }))).sort((a, b) => a.from - b.from);
-  let best;
-
-  for (let x = pin.halfWidth; ; x = Math.min(x + 4, limit)) {
-    let y = pin.radius + 3 + (index * 7) % 9;
-    for (const interval of intervals) {
-      if (y <= interval.from) break;
-      if (Math.abs(x - interval.x) < interval.reach) y = Math.max(y, interval.to);
-    }
-    const edgeDistance = fromRight ? limit - x : x - pin.halfWidth;
-    const score = y + edgeDistance / width * 9 + Math.abs(x - preferred) / width * 3;
-    if (!best || score < best.score) best = { x, y, score };
-    if (x === limit) return best;
-  }
-}
-
-function pack(pins, width, fromRight) {
-  const boxes = [];
-  const slots = pins.map((pin, index) => {
-    const { x, y } = findPosition(boxes, width, pin, index, fromRight);
-    for (const { halfWidth, top, bottom } of pin.parts) {
-      boxes.push({ x, halfWidth, top: y + top, bottom: y + bottom });
-    }
-    return { id: pin.id, size: pin.size, rotation: pin.rotation, radius: pin.radius, x, y };
-  });
-
-  const left = Math.min(...boxes.map(box => box.x - box.halfWidth));
-  const right = Math.max(...boxes.map(box => box.x + box.halfWidth));
-  const offset = (width - right - left) / 2;
-  return {
-    slots: slots.map(slot => ({ ...slot, x: slot.x + offset })),
-    height: Math.ceil(Math.max(...boxes.map(box => box.bottom))),
-  };
-}
 
 /**
- * @param {Parameters<typeof pack>[0]} pins
+ * @param {{ id: string, size: number, rotation: number, radius: number, halfWidth: number }[]} pins
  * @param {number} width
  */
 function packRows(pins, width) {
@@ -117,26 +72,8 @@ export function placeRankedPins(rankedIds, width) {
     const labelHalfWidth = Math.min(width / 2, labelWidth / 2 + 3);
     const artHalfWidth = Math.min(width / 2, radius + 2);
 
-    return { id, size, rotation, radius, halfWidth: Math.max(artHalfWidth, labelHalfWidth), parts: [
-      { halfWidth: artHalfWidth, top: -radius, bottom: radius + 3 },
-      { halfWidth: labelHalfWidth, top: radius + 3, bottom: radius + 35 },
-    ] };
+    return { id, size, rotation, radius, halfWidth: Math.max(artHalfWidth, labelHalfWidth) };
   });
 
-  // Compare largest-first packing with a pass that brings smaller pins into
-  // the early gaps. Both passes keep the original size and angle of each pin.
-  const interleaved = [];
-  for (let first = 0, last = pins.length - 1; first <= last; first++, last--) {
-    interleaved.push(pins[first]);
-    if (first < last) interleaved.push(pins[last]);
-  }
-  const layouts = [pack(pins, width, false), pack(pins, width, true),
-    pack(interleaved, width, false), pack(interleaved, width, true)];
-  const shortest = layouts.reduce((best, layout) => layout.height < best.height ? layout : best);
-  const rows = packRows(pins, width);
-  // Give the ordered rows a small allowance, with compact packing for narrow
-  // widths where a whole extra row would leave much more empty space.
-  const best = rows.height <= shortest.height * 1.1 ? rows : shortest;
-  const byId = new Map(best.slots.map(slot => [slot.id, slot]));
-  return { slots: rankedIds.map(id => byId.get(id)), height: best.height, labelWidth };
+  return { ...packRows(pins, width), labelWidth };
 }

@@ -5,7 +5,7 @@ import { collection, getDocsFromServer } from 'firebase/firestore';
 import { ArrowUpRight, ClipboardList, Globe2, ImageIcon, LogOut, RefreshCw, Search, Type } from 'lucide-react';
 import { auth, checkAdminStatus, db, logout, signInWithGoogle } from '../src/lib/firebase';
 import {
-  loadExhibitionSettings, loadExhibitionStatus, retryExhibitionRefresh, saveExhibitionSettings,
+  loadExhibitionSettings, loadExhibitionStatus, loadPublishedExhibitionGameKeys, retryExhibitionRefresh, saveExhibitionSettings,
   watchExhibitionSync, type ExhibitionSettings, type ExhibitionSyncStatus, type ExhibitionSyncError,
 } from '../src/services/exhibitionSyncService';
 import {
@@ -16,6 +16,7 @@ import { readUploadedPinImage } from '../exhibition/reader';
 import { preparePinImage, type PreparedPinImage } from './pinImage';
 import { DateRange } from './DateRange';
 import { PinWorklist } from './PinWorklist';
+import { PinImageRequirements } from './PinImageRequirements';
 import { contentForGame, type GameChoice, type PinContent } from './pinContent';
 import { StudioLanguageContext, studioImageError, studioLanguageKey, studioPublicationStep, useStudioLanguage,
   useStudioText, type StudioLanguage, type StudioMessage } from './language';
@@ -167,7 +168,8 @@ function PinEditor({ games, selected, active, onSelect, search, onSearch, search
       <div className="relative max-w-md">
         <Search aria-hidden="true" className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground" />
         <Input ref={searchInput} id="game-search" type="search" value={search} placeholder={t('Search by title')}
-          className="pl-9" onChange={event => onSearch(event.target.value)} />
+          className="pl-9" onChange={event => onSearch(event.target.value)}
+          onKeyDown={event => { if (event.key === 'Enter') event.preventDefault(); }} />
       </div>
       {query && <div className="flex flex-wrap gap-2" aria-label={t('Search results')}>
         {matches.length === 0 && <p className="text-sm text-muted-foreground" role="status">{t('No games found.')}</p>}
@@ -189,7 +191,10 @@ function PinEditor({ games, selected, active, onSelect, search, onSearch, search
               onClick={() => onDescription(pin.gameKey, undefined)}>{t('Restore default description')}</Button>}
         </div>
         <div className="grid gap-2">
-          <span className="text-sm font-medium">{t('Pin image')}</span>
+          <div className="flex items-center gap-1">
+            <span className="text-sm font-medium">{t('Pin image')}</span>
+            <PinImageRequirements key={selected.id} />
+          </div>
           <p className="text-sm text-muted-foreground" role="status">{t(imageStatus)}</p>
           <input hidden ref={fileInput} id="pin-file" type="file" accept="image/png,image/jpeg,image/webp" onChange={event => {
             const file = event.currentTarget.files?.[0];
@@ -268,8 +273,17 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
   const [savedForm, setSavedForm] = useState({ visibility, schedule, periodKind, semesterRange, dateRange, copy });
   const [sync, setSync] = useState<ExhibitionSyncStatus>('idle');
   const [status, setStatus] = useState<Awaited<ReturnType<typeof loadExhibitionStatus>>>();
+  const [statusFailed, setStatusFailed] = useState(false);
+  const [worklistReload, setWorklistReload] = useState(0);
+  const [olderGeneration, setOlderGeneration] = useState<{ id: string; keys?: string[]; failed?: boolean }>();
+  const activeGeneration = status?.generationId;
+  const publishedKeys = status?.publishedGameKeys ??
+    (activeGeneration ? (olderGeneration?.id === activeGeneration ? olderGeneration.keys : undefined)
+      : status ? [] : undefined);
   const [message, setMessage] = useState<{ text: StudioMessage; error?: boolean }>();
+  const [publicationMessage, setPublicationMessage] = useState<{ text: StudioMessage; error?: boolean }>();
   const [busy, setBusy] = useState(false);
+  const canEdit = section !== 'worklist' && (section !== 'pins' || Boolean(selectedGame));
 
   const [syncFailure, setSyncFailure] = useState<ExhibitionSyncError | null>(null);
   const requestSync = useRef<() => void>(() => {});
@@ -280,13 +294,23 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
   }, []);
   useEffect(() => {
     let cancelled = false;
-    void loadExhibitionStatus(exhibitionId).then(result => { if (!cancelled) setStatus(result); })
-      .catch(() => { if (!cancelled) setStatus(undefined); });
+    void loadExhibitionStatus(exhibitionId).then(result => {
+      if (!cancelled) { setStatus(result); setStatusFailed(false); }
+    }).catch(() => { if (!cancelled) setStatusFailed(true); });
     return () => { cancelled = true; };
-  }, [sync, busy]);
+  }, [sync, busy, worklistReload]);
+  useEffect(() => {
+    if (section !== 'worklist' || !activeGeneration || publishedKeys !== undefined) return;
+    let cancelled = false;
+    void loadPublishedExhibitionGameKeys(exhibitionId, activeGeneration).then(keys => {
+      if (!cancelled) setOlderGeneration({ id: activeGeneration, keys });
+    }).catch(() => { if (!cancelled) setOlderGeneration({ id: activeGeneration, failed: true }); });
+    return () => { cancelled = true; };
+  }, [section, activeGeneration, publishedKeys, worklistReload]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canEdit || busy || preparingImage) return;
     if (visibility === 'temporary' && !exhibitionPublicationWindow(schedule)) {
       setMessage({ text: 'Check the publication dates.', error: true });
       return;
@@ -297,7 +321,6 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
       setMessage({ text: 'Check the start and end of the record range.', error: true });
       return;
     }
-    if (preparingImage) return;
     if ([...uploads.values()].reduce((sum, upload) => sum + upload.bytes.length, 0) > 6 * 1024 * 1024) {
       setMessage({ text: 'Save fewer image files at a time.', error: true });
       return;
@@ -374,18 +397,21 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
       setPinSearch('');
       setSelectedGame(undefined);
       pinSearchInput.current?.focus();
+      setMessage(undefined);
+      return;
     }
     setMessage({ text: 'Returned to saved settings.' });
   }
 
   async function synchronize() {
     setBusy(true);
+    setPublicationMessage(undefined);
     try {
       await retryExhibitionRefresh();
       requestSync.current();
-      setMessage({ text: 'Publishing records using saved settings.' });
+      setPublicationMessage({ text: 'Publishing records using saved settings.' });
     } catch {
-      setMessage({ text: 'Could not start sync. Try again.', error: true });
+      setPublicationMessage({ text: 'Could not start sync. Try again.', error: true });
     } finally {
       setBusy(false);
     }
@@ -421,6 +447,9 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
         <div className="grid gap-1.5">
           <div className="flex items-center gap-2 text-sm font-semibold">{t('Exhibit status')} <Badge variant="secondary">{t(publicationLabel)}</Badge></div>
           <p className="text-sm text-muted-foreground" role="status">{syncLabel}</p>
+          {publicationMessage && <p className="text-sm text-muted-foreground" role={publicationMessage.error ? 'alert' : 'status'}>
+            {t(publicationMessage.text)}
+          </p>}
         </div>
         <Button type="button" variant="outline" disabled={busy || sync === 'syncing'} onClick={() => void synchronize()}>
           <RefreshCw className={sync === 'syncing' ? 'motion-safe:animate-spin' : undefined} /> {t('Publish records')}
@@ -480,7 +509,13 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
                   onFile={(pin, file) => { if (!preparingImage && !busy) void selectPinFile(pin, file); }} />
               </TabsContent>
               <TabsContent value="worklist" forceMount className="data-[state=inactive]:hidden">
-                <PinWorklist games={games} saved={savedPins} onEdit={game => {
+                <PinWorklist games={games} saved={savedPins} publishedKeys={publishedKeys}
+                  failed={statusFailed || Boolean(olderGeneration?.id === activeGeneration && olderGeneration?.failed)}
+                  onRetry={() => {
+                    setStatusFailed(false);
+                    setOlderGeneration(undefined);
+                    setWorklistReload(previous => previous + 1);
+                  }} onEdit={game => {
                   setSelectedGame(game);
                   openSection('pins');
                 }} />
@@ -501,15 +536,13 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
           </CardContent>
         </Card>
       </Tabs>
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        {section !== 'worklist' && <>
-          <Button type="submit" disabled={busy || preparingImage}>{t(preparingImage ? 'Preparing image…' : 'Save changes')}</Button>
-          <Button type="button" variant="outline" disabled={busy || preparingImage} onClick={cancel}>{t('Cancel')}</Button>
-        </>}
+      {canEdit && <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Button type="submit" disabled={busy || preparingImage}>{t(preparingImage ? 'Preparing image…' : 'Save changes')}</Button>
+        <Button type="button" variant="outline" disabled={busy || preparingImage} onClick={cancel}>{t('Cancel')}</Button>
         {message && (message.error
           ? <Alert variant="destructive" className="w-fit"><AlertDescription>{t(message.text)}</AlertDescription></Alert>
           : <p className="text-sm text-muted-foreground" role="status">{t(message.text)}</p>)}
-      </div>
+      </div>}
     </form>
   </div>;
 }
@@ -565,14 +598,15 @@ function Studio({ onLanguageChange }: { onLanguageChange: (language: StudioLangu
 
   return <>
     <header className="border-b bg-card">
-      <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-8">
-        <div className="flex items-center gap-3">
+      <div className="mx-auto grid max-w-5xl gap-x-3 gap-y-2 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:px-8">
+        <div className="flex items-center gap-3 self-start">
           <img src="/brand/studio-light.svg" alt="" className="size-9 shrink-0" />
           <h1 className="text-base font-semibold tracking-tight sm:text-lg">AVALON Studio</h1>
         </div>
-        <div className="flex flex-wrap gap-1">
-          <div role="group" aria-label={t('Studio language')} className="flex items-center gap-1 rounded-md border p-0.5">
-            {(['ko', 'en'] as const).map(option => <Button key={option} type="button" size="sm"
+        <div className="flex flex-wrap items-center gap-1">
+          <div role="group" aria-label={t('Studio language')} className="flex shrink-0 items-center rounded-md border p-0.5">
+            {(['ko', 'en'] as const).map(option => <Button key={option} type="button" size="xs"
+              className="h-6 w-[3.1rem] px-0 text-[11px]"
               variant={language === option ? 'secondary' : 'ghost'} aria-pressed={language === option}
               lang={option} onClick={() => onLanguageChange(option)}>{option === 'ko' ? '한국어' : 'English'}</Button>)}
           </div>

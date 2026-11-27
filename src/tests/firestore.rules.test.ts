@@ -17,7 +17,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 
-import { loadExhibitionSettings, loadExhibitionStatus, refreshExhibitions, retryExhibitionRefresh, saveExhibitionSettings, watchExhibitionSync } from '../services/exhibitionSyncService';
+import { loadExhibitionSettings, loadExhibitionStatus, loadPublishedExhibitionGameKeys, refreshExhibitions, retryExhibitionRefresh, saveExhibitionSettings, watchExhibitionSync } from '../services/exhibitionSyncService';
 import { importSessionRecords, updateSessionGroupGames, deleteSessionRecord } from '../services/sessionsService';
 import { requestExhibitionRefresh } from '../services/exhibitionRevision';
 import { exhibitionNameKey } from '../domain/exhibition/collection';
@@ -314,7 +314,10 @@ describe('Firestore Security Rules', () => {
     const matches = await publicReader.findExhibitionMembers(' 합성 가람 ');
     const id = matches[0]!.profileId;
     expect((await publicReader.loadExhibitionView(id)).descriptions).toEqual({ avalon: '전시 담당 설명' });
-    expect((await loadExhibitionStatus('avalon')).pending).toBe(false);
+    const published = await loadExhibitionStatus('avalon');
+    expect(published.pending).toBe(false);
+    expect(published.publishedGameKeys).toEqual([fallbackExhibitionPin('avalon'), fallbackExhibitionPin('dixit')]);
+    expect(await loadPublishedExhibitionGameKeys('avalon', published.generationId!)).toEqual(published.publishedGameKeys);
     const gameKey = fallbackExhibitionPin('avalon');
     const uploadVersion = 'upload:00000000-0000-4000-8000-000000000001';
     const uploadPath = `exhibitionPinAppearance/avalon/exhibitionImages/${gameKey}`;

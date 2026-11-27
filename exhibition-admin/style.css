@@ -26,7 +26,7 @@
 
 @layer base {
   * { @apply border-border; }
-  html { color-scheme: light; }
+  html { color-scheme: light; scrollbar-gutter: stable; }
   body { @apply min-w-0 bg-background font-sans text-foreground antialiased; }
   button:not(:disabled) { cursor: pointer; }
   [data-slot="button"]:active:not(:disabled) { filter: brightness(.94); }

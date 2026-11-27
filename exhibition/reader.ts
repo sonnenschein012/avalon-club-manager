@@ -1,6 +1,7 @@
 import { Bytes, doc, getDocFromServer, onSnapshot, type DocumentData, type Firestore } from 'firebase/firestore';
 import { exhibitionNameKey, type ExhibitionProfile } from '../src/domain/exhibition/collection';
 import { exhibitionCopy, isExhibitionImageUpload, type ExhibitionCopy } from '../src/domain/exhibition/presentation';
+import { withFirestoreDeadline } from '../src/lib/firestoreDeadline';
 
 export async function readUploadedPinImage(db: Firestore, exhibitionId: string, key: string, version: string) {
   if (!isExhibitionImageUpload(version)) return;
@@ -10,6 +11,7 @@ export async function readUploadedPinImage(db: Firestore, exhibitionId: string, 
 }
 
 export class ExhibitionUnavailable extends Error {}
+export const exhibitionLookupBudget = 3_000;
 
 interface Publication {
   id: string;
@@ -29,11 +31,14 @@ export function createExhibitionReader(db: Firestore, exhibitionId: string) {
   const access = doc(db, 'exhibitionAccess', exhibitionId);
   const appearance = doc(db, 'exhibitionPinAppearance', exhibitionId);
   let nameLookup: { publication: Publication; candidates: Set<string>; expiresAt: number } | undefined;
+  let warmAccess: { request: Promise<Publication | null>; expiresAt: number } | undefined;
   let lookupRequest = 0;
 
-  async function generation(): Promise<Publication> {
+  async function generation(signal: AbortSignal): Promise<Publication> {
+    signal.throwIfAborted();
     try {
       const available = publication((await getDocFromServer(access)).data());
+      signal.throwIfAborted();
       if (available) return available;
     } catch (error) {
       if ((error as { code?: string }).code !== 'permission-denied') throw error;
@@ -41,40 +46,56 @@ export function createExhibitionReader(db: Firestore, exhibitionId: string) {
     throw new ExhibitionUnavailable('현재 볼 수 있는 기록이 없습니다.');
   }
 
-  async function readActive<T>(kind: 'names' | 'profiles', id: string, published?: Publication) {
-    const first = published ?? await generation();
+  async function readActive<T>(kind: 'names' | 'profiles', id: string, signal: AbortSignal, published?: Publication) {
+    const first = published ?? await generation(signal);
     try {
+      signal.throwIfAborted();
       const snapshot = await getDocFromServer(doc(access, 'generations', first.id, kind, id));
+      signal.throwIfAborted();
       return { ...first, record: (snapshot.data() as T | undefined) ?? null, generationId: first.id };
     } catch (error) {
       if ((error as { code?: string }).code !== 'permission-denied') throw error;
-      const next = await generation();
+      const next = await generation(signal);
       if (first.id === next.id) throw error;
       const snapshot = await getDocFromServer(doc(access, 'generations', next.id, kind, id));
+      signal.throwIfAborted();
       return { ...next, record: (snapshot.data() as T | undefined) ?? null, generationId: next.id };
     }
   }
 
-  async function findExhibitionMembers(name: string) {
-    const request = ++lookupRequest;
-    nameLookup = undefined;
-    const id = await exhibitionNameKey(name);
-    if (!id) return [];
-    const { record, ...published } =
-      await readActive<{ candidates: { profileId: string; yearLabel?: string }[] }>('names', id);
-    const candidates = record?.candidates ?? [];
-    if (request === lookupRequest && candidates.length) {
-      nameLookup = { publication: published, candidates: new Set(candidates.map(candidate => candidate.profileId)),
-        expiresAt: Math.min(Date.now() + 30_000, published.endsAt ?? Infinity) };
-    }
-    return candidates;
+  function primeExhibitionNameLookup() {
+    if (warmAccess && Date.now() < warmAccess.expiresAt) return;
+    warmAccess = {
+      request: withFirestoreDeadline(generation, exhibitionLookupBudget).catch(() => null),
+      expiresAt: Date.now() + 30_000,
+    };
   }
 
-  function loadExhibitionView(id: string, published?: Publication) {
+  function findExhibitionMembers(name: string) {
+    const request = ++lookupRequest;
+    nameLookup = undefined;
+    const warm = warmAccess;
+    warmAccess = undefined;
+    return withFirestoreDeadline(async signal => {
+      const id = await exhibitionNameKey(name);
+      if (!id) return [];
+      const primed = warm && Date.now() < warm.expiresAt ? await warm.request : null;
+      const { record, ...published } = await readActive<{ candidates: { profileId: string; yearLabel?: string }[] }>(
+        'names', id, signal, primed ?? undefined);
+      const candidates = record?.candidates ?? [];
+      if (request === lookupRequest && candidates.length) {
+        nameLookup = { publication: published, candidates: new Set(candidates.map(candidate => candidate.profileId)),
+          expiresAt: Math.min(Date.now() + 30_000, published.endsAt ?? Infinity) };
+      }
+      return candidates;
+    }, exhibitionLookupBudget);
+  }
+
+  function loadExhibitionView(id: string, published?: Publication, deadline = exhibitionLookupBudget) {
     const lookup = nameLookup;
     nameLookup = undefined;
     const recent = lookup && lookup.candidates.has(id) && Date.now() < lookup.expiresAt ? lookup.publication : undefined;
-    return readActive<ExhibitionProfile>('profiles', id, published ?? recent);
+    return withFirestoreDeadline(signal => readActive<ExhibitionProfile>('profiles', id, signal, published ?? recent), deadline);
   }
 
   const loadExhibitionProfile = async (id: string) => (await loadExhibitionView(id)).record;
@@ -97,7 +118,7 @@ export function createExhibitionReader(db: Firestore, exhibitionId: string) {
       if (!snapshot.metadata.fromCache && data) change({ descriptions: data.descriptions ?? {}, images: data.images ?? {} });
     }, () => {});
   return {
-    findExhibitionMembers, loadExhibitionProfile, loadExhibitionView,
+    primeExhibitionNameLookup, findExhibitionMembers, loadExhibitionProfile, loadExhibitionView,
     loadExhibitionPinImage: (key: string, version: string) => readUploadedPinImage(db, exhibitionId, key, version),
     watchExhibitionPublication, watchExhibitionCopy, watchExhibitionAppearance,
   };

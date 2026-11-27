@@ -25,6 +25,7 @@ vi.mock('firebase/firestore', () => ({
     { id: 'magic-labyrinth-game', data: () => ({ title: '마법의 미로' }) },
     { id: 'hanabi-game', data: () => ({ title: '하나비' }) },
     { id: 'missing-pin', data: () => ({ title: '미등록 게임' }) },
+    { id: 'unused-game', data: () => ({ title: '기록 없는 게임' }) },
   ] }),
 }));
 vi.mock('../lib/firebase', () => ({
@@ -34,7 +35,8 @@ vi.mock('../../exhibition-admin/pinImage', () => ({ preparePinImage: mocks.prepa
 vi.mock('../../exhibition/reader', () => ({ readUploadedPinImage: async () => 'data:image/webp;base64,AAEC' }));
 vi.mock('../services/exhibitionSyncService', () => ({
   loadExhibitionSettings: async () => ({ enabled: false, period: { kind: 'all' }, gameMapping: [] }),
-  loadExhibitionStatus: async () => ({ pending: false, unmappedGameIds: ['source-game'], missingMemberIds: [] }),
+  loadExhibitionStatus: async () => ({ pending: false, generationId: '42', unmappedGameIds: ['source-game'], missingMemberIds: [] }),
+  loadPublishedExhibitionGameKeys: async () => [fallbackExhibitionPin('missing-pin'), fallbackExhibitionPin('source-game')],
   retryExhibitionRefresh: mocks.retry,
   saveExhibitionSettings: mocks.save,
   watchExhibitionSync: () => ({ stop: () => {}, request: mocks.request }),
@@ -92,6 +94,10 @@ describe('exhibition admin settings', () => {
     expect(worklist.textContent).toContain('Missing image');
     expect(worklist.textContent).toContain('Missing description');
     expect(worklist.textContent).not.toContain('The Resistance: Avalon');
+    expect(worklist.textContent).not.toContain('기록 없는 게임');
+    await act(async () => { clickButton('All catalog games'); });
+    expect(worklist.textContent).toContain('기록 없는 게임');
+    await act(async () => { clickButton('In published records'); });
     const missingGame = () => [...worklist.querySelectorAll<HTMLButtonElement>('li button')]
       .find(button => button.textContent?.includes('미등록 게임'));
     expect(missingGame()?.textContent).toContain('Missing image');
@@ -136,6 +142,15 @@ describe('exhibition admin settings', () => {
     expect(document.querySelector('#pin-choice')).toBeNull();
     expect(document.body.textContent).toContain('Default image');
     expect(document.body.textContent).toContain('Replace image');
+    const help = document.querySelector<HTMLButtonElement>('button[aria-label="Image requirements"]')!;
+    const helpPanel = document.getElementById(help.getAttribute('aria-controls')!)!;
+    expect(helpPanel.hidden).toBe(true);
+    await act(async () => help.click());
+    expect(help.getAttribute('aria-expanded')).toBe('true');
+    expect(helpPanel.textContent).toContain('up to 16 MB');
+    expect(helpPanel.textContent).toContain('512 px');
+    await act(async () => help.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(helpPanel.hidden).toBe(true);
     expect(document.querySelector('details')).not.toHaveProperty('open', true);
     await act(async () => document.querySelector<HTMLElement>('summary')?.click());
     expect(document.querySelector('details')).toHaveProperty('open', true);
@@ -204,9 +219,16 @@ describe('exhibition admin settings', () => {
     expect(document.querySelector('h3')).toBeNull();
     expect(document.querySelector('#game-search')).toHaveProperty('value', '');
     expect(document.activeElement?.id).toBe('game-search');
+    expect(document.querySelector('form button[type="submit"]')).toBeNull();
+    expect(document.querySelector('form')?.textContent).not.toContain('취소');
+    expect(document.body.textContent).not.toContain('마지막으로 저장한 설정으로 되돌렸습니다.');
     expect(mocks.save).toHaveBeenCalledTimes(savesBeforeCancel);
     await act(async () => { change('input[type="search"]', 'Avalon'); });
+    expect(document.querySelector('form button[type="submit"]')).toBeNull();
+    await act(async () => { document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    expect(mocks.save).toHaveBeenCalledTimes(savesBeforeCancel);
     await act(async () => { clickButton('레지스탕스 아발론'); });
+    expect(document.querySelector('form button[type="submit"]')).not.toBeNull();
     expect(document.querySelector('h3')?.textContent).toBe('레지스탕스 아발론');
     expect(document.querySelector('textarea')).toHaveProperty('value', '새 핀 설명');
     expect(document.body.textContent).toContain('등록된 이미지');
