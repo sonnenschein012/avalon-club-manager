@@ -1,6 +1,7 @@
 import { exhibitionImageUrl, exhibitionPins, fallbackExhibitionPin, isExhibitionImageUpload } from '../src/domain/exhibition/presentation';
+import type { StudioLanguage } from './language';
 
-export type GameChoice = { id: string; displayName: string; searchTitles: string[]; defaultPin: string };
+export type GameChoice = { id: string; names: Record<StudioLanguage, string>; searchTitles: string[]; defaultPin: string };
 export type PinContent = {
   mapping: ReadonlyMap<string, string>;
   descriptions: Record<string, string>;

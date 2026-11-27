@@ -83,6 +83,12 @@ describe('exhibition admin settings', () => {
     expect(document.querySelector('h1')?.textContent).toBe('AVALON Studio');
     await act(async () => { press('[role="tab"][id$="-trigger-worklist"]', 'Enter'); });
     const worklist = document.querySelector('[role="tabpanel"][id$="-content-worklist"]')!;
+    await act(async () => { clickButton('한국어'); });
+    expect(document.documentElement.lang).toBe('ko');
+    expect(localStorage.getItem('avalon-studio-language')).toBe('ko');
+    expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('작업 현황');
+    expect(worklist.textContent).toContain('이미지 미등록');
+    await act(async () => { clickButton('English'); });
     expect(worklist.textContent).toContain('Missing image');
     expect(worklist.textContent).toContain('Missing description');
     expect(worklist.textContent).not.toContain('The Resistance: Avalon');
@@ -130,10 +136,20 @@ describe('exhibition admin settings', () => {
     expect(document.querySelector('#pin-choice')).toBeNull();
     expect(document.body.textContent).toContain('Default image');
     expect(document.body.textContent).toContain('Replace image');
+    expect(document.querySelector('details')).not.toHaveProperty('open', true);
+    await act(async () => document.querySelector<HTMLElement>('summary')?.click());
+    expect(document.querySelector('details')).toHaveProperty('open', true);
+    expect(document.querySelector('label[for="pin-image"]')?.textContent).toBe('Image URL (optional)');
     await act(async () => {
       change('textarea', ' 새 핀 설명 ');
       change('input[inputmode="url"]', 'https://example.com/pin.webp');
     });
+    await act(async () => { clickButton('한국어'); });
+    expect(document.querySelector('h3')?.textContent).toBe('레지스탕스 아발론');
+    expect(document.querySelector('textarea')).toHaveProperty('value', ' 새 핀 설명 ');
+    expect(document.querySelector('label[for="pin-image"]')?.textContent).toBe('이미지 URL (선택)');
+    expect(document.querySelector('input[inputmode="url"]')).toHaveProperty('value', 'https://example.com/pin.webp');
+    await act(async () => { clickButton('English'); });
     expect(document.querySelector('img[alt="The Resistance: Avalon pin"]')?.getAttribute('src')).toBe('https://example.com/pin.webp');
     await act(async () => { press('[role="tab"][id$="-trigger-copy"]', 'Enter'); });
     expect(document.querySelector('input#entryTitle')).toHaveProperty('value', exhibitionCopy.entryTitle);
@@ -164,7 +180,7 @@ describe('exhibition admin settings', () => {
     mocks.prepareImage.mockResolvedValueOnce(upload);
     await act(async () => {
       const fileInput = document.querySelector<HTMLInputElement>('#pin-file')!;
-      Object.defineProperty(fileInput, 'files', { value: [new File(['image'], 'pin.png', { type: 'image/png' })] });
+      Object.defineProperty(fileInput, 'files', { configurable: true, value: [new File(['image'], 'pin.png', { type: 'image/png' })] });
       fileInput.dispatchEvent(new Event('change', { bubbles: true }));
     });
     expect(document.querySelector('img[alt="The Resistance: Avalon pin"]')?.getAttribute('src')).toBe(upload.preview);
@@ -173,6 +189,31 @@ describe('exhibition admin settings', () => {
       new Map([[gameKey, upload]]));
     expect(document.body.textContent).toContain('Uploaded image');
     expect(document.body.textContent).not.toContain('New image ready to save');
+    const replacement = { ...upload, version: 'upload:00000000-0000-4000-8000-000000000002' };
+    mocks.prepareImage.mockResolvedValueOnce(replacement);
+    await act(async () => {
+      change('textarea', '저장하지 않을 핀 설명');
+      const fileInput = document.querySelector<HTMLInputElement>('#pin-file')!;
+      Object.defineProperty(fileInput, 'files', { configurable: true, value: [new File(['replacement'], 'new.png', { type: 'image/png' })] });
+      fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(document.body.textContent).toContain('New image ready to save');
+    const savesBeforeCancel = mocks.save.mock.calls.length;
+    await act(async () => { clickButton('한국어'); });
+    await act(async () => { clickButton('취소'); });
+    expect(document.querySelector('h3')).toBeNull();
+    expect(document.querySelector('#game-search')).toHaveProperty('value', '');
+    expect(document.activeElement?.id).toBe('game-search');
+    expect(mocks.save).toHaveBeenCalledTimes(savesBeforeCancel);
+    await act(async () => { change('input[type="search"]', 'Avalon'); });
+    await act(async () => { clickButton('레지스탕스 아발론'); });
+    expect(document.querySelector('h3')?.textContent).toBe('레지스탕스 아발론');
+    expect(document.querySelector('textarea')).toHaveProperty('value', '새 핀 설명');
+    expect(document.body.textContent).toContain('등록된 이미지');
+    expect(document.body.textContent).not.toContain('새 이미지가 저장 대기 중입니다.');
+    await act(async () => { clickButton('English'); press('[role="tab"][id$="-trigger-copy"]', 'Enter'); });
+    await act(async () => { change('input#entryTitle', '저장하지 않을 전시 제목'); clickButton('Cancel'); });
+    expect(document.querySelector('input#entryTitle')).toHaveProperty('value', '우리의 컬렉션');
     await act(async () => { press('[role="tab"][id$="-trigger-worklist"]', 'Enter'); });
     await act(async () => missingGame()!.click());
     await act(async () => {

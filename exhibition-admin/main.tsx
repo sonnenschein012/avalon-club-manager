@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type RefObject } from 'react';
 import { createRoot } from 'react-dom/client';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { collection, getDocsFromServer } from 'firebase/firestore';
@@ -17,6 +17,8 @@ import { preparePinImage, type PreparedPinImage } from './pinImage';
 import { DateRange } from './DateRange';
 import { PinWorklist } from './PinWorklist';
 import { contentForGame, type GameChoice, type PinContent } from './pinContent';
+import { StudioLanguageContext, studioImageError, studioLanguageKey, studioPublicationStep, useStudioLanguage,
+  useStudioText, type StudioLanguage, type StudioMessage } from './language';
 import gameTitles from './gameTitles.json';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -39,8 +41,8 @@ const sections = {
   pins: { label: 'Games and pins', icon: ImageIcon },
   worklist: { label: 'Needs attention', icon: ClipboardList },
   copy: { label: 'Exhibit text', icon: Type },
-};
-const copyLabels: Record<keyof typeof exhibitionCopy, string> = {
+} as const;
+const copyLabels: Record<keyof typeof exhibitionCopy, StudioMessage> = {
   entryTitle: 'Home title', edition: 'Edition label', namePrompt: 'Name prompt', collectionTitle: 'Collection title',
   pinHint: 'Pin instructions', archiveTitle: 'Session history title', groupLabel: 'Group heading',
   companionsLabel: 'Players heading', labelsToggle: 'Pin labels toggle', anotherName: 'Search again link',
@@ -61,6 +63,7 @@ type Section = keyof typeof sections;
 type EditorPeriod = Exclude<ExhibitionSettings['period'], { kind: 'semester' }> |
   { kind: 'semesterRange'; start: string; end: string };
 type PeriodRange = { start: string; end: string };
+const emptyRange: PeriodRange = { start: '', end: '' };
 
 function getEditorPeriod(period: ExhibitionSettings['period']): EditorPeriod {
   if (period.kind === 'semester') return { kind: 'semesterRange', start: period.semester, end: period.semester };
@@ -95,25 +98,30 @@ function RadioChoices<T extends string>({ label, items, value, onChange }: {
 }
 
 function SemesterField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  const t = useStudioText();
   const [year = '', term = '1'] = value.split('-');
   return <div className="grid gap-2" role="group" aria-label={label}>
     <Label>{label}</Label>
     <div className="grid grid-cols-2 gap-2">
-      <Input aria-label={label + ' year'} inputMode="numeric" placeholder="Year" maxLength={4} value={year}
+      <Input aria-label={label + ' ' + t('year')} inputMode="numeric" placeholder={t('Year')} maxLength={4} value={year}
         onChange={event => onChange(`${event.target.value.replace(/[^0-9]/g, '')}-${term}`)} />
       <Select value={term} onValueChange={next => onChange(`${year}-${next}`)}>
-        <SelectTrigger aria-label={label + ' term'} className="w-full"><SelectValue /></SelectTrigger>
-        <SelectContent><SelectItem value="1">Semester 1</SelectItem><SelectItem value="2">Semester 2</SelectItem></SelectContent>
+        <SelectTrigger aria-label={label + ' ' + t('term')} className="w-full"><SelectValue /></SelectTrigger>
+        <SelectContent><SelectItem value="1">{t('Semester 1')}</SelectItem><SelectItem value="2">{t('Semester 2')}</SelectItem></SelectContent>
       </Select>
     </div>
   </div>;
 }
 
-function PinEditor({ games, selected, active, onSelect, content, uploads, onExclusion, onDescription, onImage, onFile }: {
+function PinEditor({ games, selected, active, onSelect, search, onSearch, searchInput, content, uploads,
+  onExclusion, onDescription, onImage, onFile }: {
   games: GameChoice[];
   selected: GameChoice | undefined;
   active: boolean;
   onSelect: (game: GameChoice) => void;
+  search: string;
+  onSearch: (query: string) => void;
+  searchInput: RefObject<HTMLInputElement | null>;
   content: PinContent;
   uploads: ReadonlyMap<string, PreparedPinImage>;
   onExclusion: (id: string, excluded: boolean) => void;
@@ -121,7 +129,8 @@ function PinEditor({ games, selected, active, onSelect, content, uploads, onExcl
   onImage: (pin: string, text: string) => void;
   onFile: (pin: string, file: File) => void;
 }) {
-  const [search, setSearch] = useState('');
+  const t = useStudioText();
+  const language = useStudioLanguage();
   const [brokenImage, setBrokenImage] = useState<string>();
   const fileInput = useRef<HTMLInputElement>(null);
   const editHeading = useRef<HTMLHeadingElement>(null);
@@ -154,34 +163,34 @@ function PinEditor({ games, selected, active, onSelect, content, uploads, onExcl
 
   return <div className="grid gap-6">
     <div className="grid gap-2">
-      <Label htmlFor="game-search">Find a game</Label>
+      <Label htmlFor="game-search">{t('Find a game')}</Label>
       <div className="relative max-w-md">
         <Search aria-hidden="true" className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground" />
-        <Input id="game-search" type="search" value={search} placeholder="Search by title"
-          className="pl-9" onChange={event => setSearch(event.target.value)} />
+        <Input ref={searchInput} id="game-search" type="search" value={search} placeholder={t('Search by title')}
+          className="pl-9" onChange={event => onSearch(event.target.value)} />
       </div>
-      {query && <div className="flex flex-wrap gap-2" aria-label="Search results">
-        {matches.length === 0 && <p className="text-sm text-muted-foreground" role="status">No games found.</p>}
+      {query && <div className="flex flex-wrap gap-2" aria-label={t('Search results')}>
+        {matches.length === 0 && <p className="text-sm text-muted-foreground" role="status">{t('No games found.')}</p>}
         {matches.slice(0, 12).map(game => <Button type="button" key={game.id}
           variant={selected?.id === game.id ? 'default' : 'outline'} aria-pressed={selected?.id === game.id}
-          onClick={() => { onSelect(game); setBrokenImage(undefined); }}>{game.displayName}</Button>)}
-        {matches.length > 12 && <p className="w-full text-sm text-muted-foreground">Type more to narrow the results.</p>}
+          onClick={() => { onSelect(game); setBrokenImage(undefined); }}>{game.names[language]}</Button>)}
+        {matches.length > 12 && <p className="w-full text-sm text-muted-foreground">{t('Type more to narrow the results.')}</p>}
       </div>}
     </div>
     {selected && pin && <div className="grid gap-6 min-[680px]:grid-cols-[minmax(0,1fr)_minmax(0,15rem)]">
       <div className="grid gap-4">
-        <h3 ref={editHeading} tabIndex={-1} className="text-base font-semibold">{selected.displayName}</h3>
+        <h3 ref={editHeading} tabIndex={-1} className="text-base font-semibold">{selected.names[language]}</h3>
         <div className="grid gap-2">
-          <Label htmlFor="pin-description">Pin description</Label>
+          <Label htmlFor="pin-description">{t('Pin description')}</Label>
           <Textarea id="pin-description" rows={4} maxLength={500}
             value={pin.description} onChange={event => onDescription(pin.gameKey, event.target.value)} />
           {pin.defaultDescription && pin.description !== pin.defaultDescription &&
             <Button className="justify-self-start px-0" type="button" variant="link" size="sm"
-              onClick={() => onDescription(pin.gameKey, undefined)}>Restore default description</Button>}
+              onClick={() => onDescription(pin.gameKey, undefined)}>{t('Restore default description')}</Button>}
         </div>
         <div className="grid gap-2">
-          <span className="text-sm font-medium">Pin image</span>
-          <p className="text-sm text-muted-foreground" role="status">{imageStatus}</p>
+          <span className="text-sm font-medium">{t('Pin image')}</span>
+          <p className="text-sm text-muted-foreground" role="status">{t(imageStatus)}</p>
           <input hidden ref={fileInput} id="pin-file" type="file" accept="image/png,image/jpeg,image/webp" onChange={event => {
             const file = event.currentTarget.files?.[0];
             event.currentTarget.value = '';
@@ -189,28 +198,44 @@ function PinEditor({ games, selected, active, onSelect, content, uploads, onExcl
           }} />
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="outline" onClick={() => fileInput.current?.click()}>
-              {pin.hasImage ? 'Replace image' : 'Choose image'}
+              {t(pin.hasImage ? 'Replace image' : 'Choose image')}
             </Button>
-            {content.images[pin.gameKey] && <Button type="button" variant="ghost" onClick={() => onImage(pin.gameKey, '')}>Remove custom image</Button>}
+            {content.images[pin.gameKey] && <Button type="button" variant="ghost" onClick={() => onImage(pin.gameKey, '')}>{t('Remove custom image')}</Button>}
           </div>
         </div>
-        <div className="grid gap-2">
-          <Label htmlFor="pin-image">Custom image URL</Label>
-          <Input id="pin-image" inputMode="url" maxLength={400} placeholder="https://"
-            value={isExhibitionImageUpload(content.images[pin.gameKey]) ? '' : content.images[pin.gameKey] ?? exhibitionImageUrl(imageConfig) ?? ''}
-            onChange={event => { setBrokenImage(undefined); onImage(pin.gameKey, event.target.value); }} />
-        </div>
-        <label className="flex items-center gap-2 text-sm text-muted-foreground">
-          <input type="checkbox" checked={pin.excluded} onChange={event => onExclusion(selected.id, event.target.checked)} />
-          Exclude this game from the exhibit
-        </label>
+        <details key={selected.id} className="border-t pt-3">
+          <summary className="cursor-pointer text-sm font-medium">
+            {t('Advanced options')}{pin.excluded && <Badge className="ml-2" variant="outline">{t('Excluded')}</Badge>}
+          </summary>
+          <div className="mt-3 grid gap-4">
+            <div className="grid gap-2">
+              <Label htmlFor="pin-image">{t('Image URL (optional)')}</Label>
+              <Input id="pin-image" inputMode="url" maxLength={400} placeholder="https://" aria-describedby="pin-image-hint"
+                value={isExhibitionImageUpload(content.images[pin.gameKey]) ? '' : content.images[pin.gameKey] ?? exhibitionImageUrl(imageConfig) ?? ''}
+                onChange={event => { setBrokenImage(undefined); onImage(pin.gameKey, event.target.value); }} />
+              <p id="pin-image-hint" className="text-sm text-muted-foreground">
+                {t('Use a direct HTTPS image link if the image is hosted elsewhere. File uploads do not need a link.')}
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={pin.excluded} aria-describedby="pin-exclusion-hint"
+                  onChange={event => onExclusion(selected.id, event.target.checked)} />
+                {t('Exclude this game from the exhibit')}
+              </label>
+              <p id="pin-exclusion-hint" className="text-sm text-muted-foreground">
+                {t('After saving, the game is omitted from the next published collection. Records in the operations app are kept.')}
+              </p>
+            </div>
+          </div>
+        </details>
       </div>
       <Card className="self-start border-dashed bg-muted/50 py-4 shadow-none">
-        <CardHeader className="px-4"><CardTitle className="text-sm">Pin preview</CardTitle></CardHeader>
+        <CardHeader className="px-4"><CardTitle className="text-sm">{t('Pin preview')}</CardTitle></CardHeader>
         <CardContent className="grid min-h-32 place-items-center px-4 text-center text-sm text-muted-foreground">
           {image && brokenImage !== image ? <img className="max-h-48 w-full object-contain" src={image}
-            referrerPolicy="no-referrer" alt={selected.displayName + ' pin'} onError={() => setBrokenImage(image)} />
-            : <p>{imageFailed ? 'Image could not load.' : uploaded ? 'Loading saved image…' : 'No image for this pin.'}</p>}
+            referrerPolicy="no-referrer" alt={selected.names[language] + ' ' + t('pin')} onError={() => setBrokenImage(image)} />
+            : <p>{t(imageFailed ? 'Image could not load.' : uploaded ? 'Loading saved image…' : 'No image for this pin.')}</p>}
         </CardContent>
       </Card>
     </div>}
@@ -218,28 +243,32 @@ function PinEditor({ games, selected, active, onSelect, content, uploads, onExcl
 }
 
 function Settings({ initial, games }: { initial: ExhibitionSettings; games: GameChoice[] }) {
+  const t = useStudioText();
+  const language = useStudioLanguage();
   const [section, setSection] = useState<Section>(() => {
     const hash = window.location.hash.slice(1);
     return Object.hasOwn(sections, hash) ? hash as Section : 'publication';
   });
   const [visibility, setVisibility] = useState<ExhibitionVisibility>(initial.visibility ?? (initial.enabled ? 'public' : 'private'));
-  const [schedule, setSchedule] = useState(initial.schedule ?? { start: '', end: '' });
-  const [savedPublication, setSavedPublication] = useState({ visibility, schedule });
+  const [schedule, setSchedule] = useState(initial.schedule ?? emptyRange);
   const initialPeriod = getEditorPeriod(initial.period);
   const [periodKind, setPeriodKind] = useState(initialPeriod.kind);
-  const [semesterRange, setSemesterRange] = useState<PeriodRange>(() => initialPeriod.kind === 'semesterRange' ? initialPeriod : { start: '', end: '' });
-  const [dateRange, setDateRange] = useState<PeriodRange>(() => initialPeriod.kind === 'range' ? initialPeriod : { start: '', end: '' });
+  const [semesterRange, setSemesterRange] = useState<PeriodRange>(() => initialPeriod.kind === 'semesterRange' ? initialPeriod : emptyRange);
+  const [dateRange, setDateRange] = useState<PeriodRange>(() => initialPeriod.kind === 'range' ? initialPeriod : emptyRange);
   const [mapping, setMapping] = useState(new Map(initial.gameMapping.map(item => [item.sourceId, item.pinId])));
   const [descriptions, setDescriptions] = useState(initial.descriptions ?? {});
   const [images, setImages] = useState(initial.images ?? {});
   const [savedPins, setSavedPins] = useState<PinContent>({ mapping, descriptions, images });
   const [selectedGame, setSelectedGame] = useState<GameChoice>();
+  const [pinSearch, setPinSearch] = useState('');
+  const pinSearchInput = useRef<HTMLInputElement>(null);
   const [uploads, setUploads] = useState(new Map<string, PreparedPinImage>());
   const [preparingImage, setPreparingImage] = useState(false);
   const [copy, setCopy] = useState<ExhibitionCopy>(initial.copy ?? {});
+  const [savedForm, setSavedForm] = useState({ visibility, schedule, periodKind, semesterRange, dateRange, copy });
   const [sync, setSync] = useState<ExhibitionSyncStatus>('idle');
   const [status, setStatus] = useState<Awaited<ReturnType<typeof loadExhibitionStatus>>>();
-  const [message, setMessage] = useState<{ text: string; error?: boolean }>();
+  const [message, setMessage] = useState<{ text: StudioMessage; error?: boolean }>();
   const [busy, setBusy] = useState(false);
 
   const [syncFailure, setSyncFailure] = useState<ExhibitionSyncError | null>(null);
@@ -300,7 +329,12 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
       setImages(savedImages);
       setSavedPins({ mapping, descriptions: savedDescriptions, images: savedImages });
       setUploads(new Map());
-      setSavedPublication({ visibility, schedule });
+      setSavedForm({
+        visibility, periodKind, copy: savedCopy,
+        schedule: visibility === 'temporary' ? schedule : emptyRange,
+        semesterRange: periodKind === 'semesterRange' ? semesterRange : emptyRange,
+        dateRange: periodKind === 'range' ? dateRange : emptyRange,
+      });
       setMessage({ text: 'Changes saved.' });
       if (needsSync) {
         setMessage({ text: 'Changes saved. Updating records…' });
@@ -321,8 +355,27 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
       setUploads(previous => new Map(previous).set(key, upload));
       setImages(previous => ({ ...previous, [key]: upload.version }));
     } catch (error) {
-      setMessage({ text: error instanceof Error ? error.message : 'Could not prepare this image.', error: true });
+      setMessage({ text: studioImageError(error), error: true });
     } finally { setPreparingImage(false); }
+  }
+
+  function cancel() {
+    setVisibility(savedForm.visibility);
+    setSchedule(savedForm.schedule);
+    setPeriodKind(savedForm.periodKind);
+    setSemesterRange(savedForm.semesterRange);
+    setDateRange(savedForm.dateRange);
+    setCopy(savedForm.copy);
+    setMapping(new Map(savedPins.mapping));
+    setDescriptions(savedPins.descriptions);
+    setImages(savedPins.images);
+    setUploads(new Map());
+    if (section === 'pins') {
+      setPinSearch('');
+      setSelectedGame(undefined);
+      pinSearchInput.current?.focus();
+    }
+    setMessage({ text: 'Returned to saved settings.' });
   }
 
   async function synchronize() {
@@ -338,16 +391,21 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
     }
   }
 
-  const lastSync = status?.lastSyncedAt?.toLocaleString('en-US', { timeZone: 'Asia/Seoul', dateStyle: 'medium', timeStyle: 'short' });
-  const savedWindow = savedPublication.visibility === 'temporary' ? exhibitionPublicationWindow(savedPublication.schedule) : null;
+  const lastSync = status?.lastSyncedAt?.toLocaleString(language === 'ko' ? 'ko-KR' : 'en-US',
+    { timeZone: 'Asia/Seoul', dateStyle: 'medium', timeStyle: 'short' });
+  const count = status?.profileCount ?? 0;
+  const savedWindow = savedForm.visibility === 'temporary' ? exhibitionPublicationWindow(savedForm.schedule) : null;
   const now = Date.now();
-  const publicationLabel = savedPublication.visibility === 'public' ? 'Public'
+  const publicationLabel = savedForm.visibility === 'public' ? 'Public'
     : !savedWindow ? 'Private'
       : now < savedWindow.start.getTime() ? 'Scheduled'
         : now >= savedWindow.end.getTime() ? 'Ended' : 'Public · scheduled';
-  const syncLabel = sync === 'syncing' ? 'Publishing records…' : sync === 'error' && status?.pending !== false ? 'Publication failed · retrying'
-    : status?.pending || (sync === 'pending' && !status) ? 'Publication pending'
-    : lastSync ? `Last published: ${lastSync} KST · ${status?.profileCount ?? 0} collections` : 'No records published yet';
+  const lastSyncLabel = language === 'ko' ? `${t('Last published:')} ${lastSync} · 컬렉션 ${count}개`
+    : `Last published: ${lastSync} KST · ${count} collections`;
+  const syncLabel = sync === 'syncing' ? t('Publishing records…')
+    : sync === 'error' && status?.pending !== false ? t('Publication failed · retrying')
+      : status?.pending || (sync === 'pending' && !status) ? t('Publication pending')
+        : lastSync ? lastSyncLabel : t('No records published yet');
 
   function openSection(next: Section) {
     setSection(next);
@@ -356,48 +414,51 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
 
   return <div className="grid gap-5">
     {syncFailure && <Alert variant="destructive"><AlertDescription>
-      Record publication: {syncFailure.step} ({syncFailure.code})
+      {t('Record publication:')} {studioPublicationStep(syncFailure.step, language)} ({syncFailure.code})
     </AlertDescription></Alert>}
     <Card className="gap-0 py-4 shadow-none">
       <CardContent className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-5">
         <div className="grid gap-1.5">
-          <div className="flex items-center gap-2 text-sm font-semibold">Exhibit status <Badge variant="secondary">{publicationLabel}</Badge></div>
+          <div className="flex items-center gap-2 text-sm font-semibold">{t('Exhibit status')} <Badge variant="secondary">{t(publicationLabel)}</Badge></div>
           <p className="text-sm text-muted-foreground" role="status">{syncLabel}</p>
         </div>
         <Button type="button" variant="outline" disabled={busy || sync === 'syncing'} onClick={() => void synchronize()}>
-          <RefreshCw className={sync === 'syncing' ? 'motion-safe:animate-spin' : undefined} /> Publish records
+          <RefreshCw className={sync === 'syncing' ? 'motion-safe:animate-spin' : undefined} /> {t('Publish records')}
         </Button>
       </CardContent>
     </Card>
     <form onSubmit={event => void save(event)}>
       <Tabs value={section} onValueChange={next => openSection(next as Section)} className="gap-4">
-        <TabsList aria-label="Exhibit settings" className="grid h-auto! w-full max-w-xl grid-cols-2 gap-1 p-1 sm:grid-cols-4">
+        <TabsList aria-label={t('Exhibit settings')} className="grid h-auto! w-full max-w-xl grid-cols-2 gap-1 p-1 sm:grid-cols-4">
           {Object.entries(sections).map(([key, item]) => <TabsTrigger key={key} value={key}
             className="h-10 min-w-0 whitespace-normal px-1.5 text-center leading-tight sm:px-3">
-            <item.icon aria-hidden="true" className="hidden sm:block" />{item.label}
+            <item.icon aria-hidden="true" className="hidden sm:block" />{t(item.label)}
           </TabsTrigger>)}
         </TabsList>
         <Card className="shadow-none">
-          <CardHeader><CardTitle>{sections[section].label}</CardTitle></CardHeader>
+          <CardHeader><CardTitle>{t(sections[section].label)}</CardTitle></CardHeader>
           <CardContent>
             <fieldset disabled={busy || preparingImage} className="min-w-0">
               <TabsContent value="publication" className="grid max-w-2xl gap-5">
-                <RadioChoices label="Visibility" items={visibilityOptions} value={visibility} onChange={setVisibility} />
+                <RadioChoices label={t('Visibility')} items={visibilityOptions.map(([id, label]) => [id, t(label)] as const)}
+                  value={visibility} onChange={setVisibility} />
                 {visibility === 'temporary' && <>
-                  <DateRange startLabel="Publish on" endLabel="Close after" value={schedule} onChange={setSchedule} />
-                  <p className="text-sm text-muted-foreground">Both dates are included. All times are KST.</p>
+                  <DateRange startLabel={t('Publish on')} endLabel={t('Close after')} value={schedule} onChange={setSchedule} />
+                  <p className="text-sm text-muted-foreground">{t('Both dates are included. All times are KST.')}</p>
                 </>}
                 <div className="border-t pt-5">
-                  <RadioChoices label="Record range" items={periodOptions} value={periodKind} onChange={setPeriodKind} />
+                  <RadioChoices label={t('Record range')} items={periodOptions.map(([id, label]) => [id, t(label)] as const)}
+                    value={periodKind} onChange={setPeriodKind} />
                 </div>
                 {periodKind === 'semesterRange' && <div className="grid gap-4 sm:grid-cols-2">
-                  <SemesterField label="Start semester" value={semesterRange.start} onChange={start => setSemesterRange({ ...semesterRange, start })} />
-                  <SemesterField label="End semester" value={semesterRange.end} onChange={end => setSemesterRange({ ...semesterRange, end })} />
+                  <SemesterField label={t('Start semester')} value={semesterRange.start} onChange={start => setSemesterRange({ ...semesterRange, start })} />
+                  <SemesterField label={t('End semester')} value={semesterRange.end} onChange={end => setSemesterRange({ ...semesterRange, end })} />
                 </div>}
-                {periodKind === 'range' && <DateRange startLabel="First record date" endLabel="Last record date" value={dateRange} onChange={setDateRange} />}
+                {periodKind === 'range' && <DateRange startLabel={t('First record date')} endLabel={t('Last record date')} value={dateRange} onChange={setDateRange} />}
               </TabsContent>
               <TabsContent value="pins" forceMount className="data-[state=inactive]:hidden">
                 <PinEditor games={games} selected={selectedGame} active={section === 'pins'} onSelect={setSelectedGame}
+                  search={pinSearch} onSearch={setPinSearch} searchInput={pinSearchInput}
                   content={{ mapping, descriptions, images }} uploads={uploads}
                   onExclusion={(id, excluded) => setMapping(previous => {
                     const next = new Map(previous);
@@ -426,10 +487,10 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
               </TabsContent>
               <TabsContent value="copy" className="space-y-6">
                 {copyGroups.map(group => <fieldset key={group.title} className="border-b pb-6 last:border-0 last:pb-0">
-                  <legend className="mb-4 text-sm font-semibold">{group.title}</legend>
+                  <legend className="mb-4 text-sm font-semibold">{t(group.title)}</legend>
                   <div className="grid gap-4 sm:grid-cols-2">
                     {group.fields.map(key => <div key={key} className="grid gap-2">
-                      <Label htmlFor={key}>{copyLabels[key]}</Label>
+                      <Label htmlFor={key}>{t(copyLabels[key])}</Label>
                       <Input id={key} maxLength={key.endsWith('Title') ? 45 : 150} value={copy[key] ?? exhibitionCopy[key]}
                         onChange={event => setCopy({ ...copy, [key]: event.target.value })} />
                     </div>)}
@@ -441,16 +502,21 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
         </Card>
       </Tabs>
       <div className="mt-4 flex flex-wrap items-center gap-3">
-        {section !== 'worklist' && <Button type="submit" disabled={busy || preparingImage}>{preparingImage ? 'Preparing image…' : 'Save changes'}</Button>}
+        {section !== 'worklist' && <>
+          <Button type="submit" disabled={busy || preparingImage}>{t(preparingImage ? 'Preparing image…' : 'Save changes')}</Button>
+          <Button type="button" variant="outline" disabled={busy || preparingImage} onClick={cancel}>{t('Cancel')}</Button>
+        </>}
         {message && (message.error
-          ? <Alert variant="destructive" className="w-fit"><AlertDescription>{message.text}</AlertDescription></Alert>
-          : <p className="text-sm text-muted-foreground" role="status">{message.text}</p>)}
+          ? <Alert variant="destructive" className="w-fit"><AlertDescription>{t(message.text)}</AlertDescription></Alert>
+          : <p className="text-sm text-muted-foreground" role="status">{t(message.text)}</p>)}
       </div>
     </form>
   </div>;
 }
 
 function Workspace() {
+  const language = useStudioLanguage();
+  const t = useStudioText();
   const [loaded, setLoaded] = useState<{ settings: ExhibitionSettings; games: GameChoice[] }>();
   const [error, setError] = useState(false);
   useEffect(() => {
@@ -460,21 +526,25 @@ function Workspace() {
         const title = String(item.data().title ?? item.id);
         const defaultPin = defaultExhibitionPin(item.id, title);
         const pin = exhibitionPins[defaultPin];
-        const displayName = englishGameTitles.get(normalizeExhibitionGameTitle(title)) ?? pin?.en ?? title;
-        const searchTitles = [title, ...displayName.split(' / '), pin?.ko ?? ''].map(normalizeExhibitionGameTitle);
-        return { id: item.id, defaultPin, displayName, searchTitles };
+        const english = englishGameTitles.get(normalizeExhibitionGameTitle(title)) ?? pin?.en ?? title;
+        const searchTitles = [title, ...english.split(' / '), pin?.ko ?? ''].map(normalizeExhibitionGameTitle);
+        const korean = /\p{Script=Hangul}/u.test(title) ? title : pin?.ko ?? title;
+        return { id: item.id, defaultPin, names: { ko: korean, en: english }, searchTitles };
       });
-      choices.sort((a, b) => a.displayName.localeCompare(b.displayName, 'en'));
       if (!cancelled) setLoaded({ settings: settings ?? empty, games: choices });
     }).catch(() => { if (!cancelled) setError(true); });
     return () => { cancelled = true; };
   }, []);
-  if (error) return <Alert variant="destructive"><AlertDescription>Could not load settings. Check your connection and permissions.</AlertDescription></Alert>;
-  return loaded ? <Settings initial={loaded.settings} games={loaded.games} />
-    : <p className="text-sm text-muted-foreground" role="status">Loading settings…</p>;
+  const games = useMemo(() => [...(loaded?.games ?? [])].sort((a, b) =>
+    a.names[language].localeCompare(b.names[language], language)), [loaded, language]);
+  if (error) return <Alert variant="destructive"><AlertDescription>{t('Could not load settings. Check your connection and permissions.')}</AlertDescription></Alert>;
+  return loaded ? <Settings initial={loaded.settings} games={games} />
+    : <p className="text-sm text-muted-foreground" role="status">{t('Loading settings…')}</p>;
 }
 
-function App() {
+function Studio({ onLanguageChange }: { onLanguageChange: (language: StudioLanguage) => void }) {
+  const language = useStudioLanguage();
+  const t = useStudioText();
   const [session, setSession] = useState<{ user: User | null; allowed: boolean }>();
   const [signInError, setSignInError] = useState(false);
   useEffect(() => {
@@ -501,27 +571,46 @@ function App() {
           <h1 className="text-base font-semibold tracking-tight sm:text-lg">AVALON Studio</h1>
         </div>
         <div className="flex flex-wrap gap-1">
-          <Button asChild variant="ghost"><a href="https://avalon-collection.web.app/" target="_blank" rel="noreferrer">View Collection <ArrowUpRight aria-hidden="true" /></a></Button>
-          {session?.user && <Button type="button" variant="ghost" onClick={() => void logout()}><LogOut aria-hidden="true" /> Sign out</Button>}
+          <div role="group" aria-label={t('Studio language')} className="flex items-center gap-1 rounded-md border p-0.5">
+            {(['ko', 'en'] as const).map(option => <Button key={option} type="button" size="sm"
+              variant={language === option ? 'secondary' : 'ghost'} aria-pressed={language === option}
+              lang={option} onClick={() => onLanguageChange(option)}>{option === 'ko' ? '한국어' : 'English'}</Button>)}
+          </div>
+          <Button asChild variant="ghost"><a href="https://avalon-collection.web.app/" target="_blank" rel="noreferrer">{t('View Collection')} <ArrowUpRight aria-hidden="true" /></a></Button>
+          {session?.user && <Button type="button" variant="ghost" onClick={() => void logout()}><LogOut aria-hidden="true" /> {t('Sign out')}</Button>}
         </div>
       </div>
     </header>
     <main className="mx-auto max-w-5xl px-4 py-7 sm:px-8 sm:py-10">
-      {!session ? <p className="text-sm text-muted-foreground" role="status">Checking access…</p>
+      {!session ? <p className="text-sm text-muted-foreground" role="status">{t('Checking access…')}</p>
         : session.user && session.allowed ? <Workspace key={session.user.uid} />
-          : session.user ? <Alert variant="destructive"><AlertDescription>Admin access is required.</AlertDescription></Alert>
+          : session.user ? <Alert variant="destructive"><AlertDescription>{t('Admin access is required.')}</AlertDescription></Alert>
             : <Card className="mx-auto max-w-sm shadow-none">
-              <CardHeader><CardTitle>Sign in to Studio</CardTitle><CardDescription>Use your Avalon admin account.</CardDescription></CardHeader>
+              <CardHeader><CardTitle>{t('Sign in to Studio')}</CardTitle><CardDescription>{t('Use your Avalon admin account.')}</CardDescription></CardHeader>
               <CardContent className="grid gap-3">
                 <Button type="button" onClick={() => {
                   setSignInError(false);
                   void signInWithGoogle().catch(() => setSignInError(true));
-                }}>Sign in with Google</Button>
-                {signInError && <Alert variant="destructive"><AlertDescription>Could not sign in. Try again.</AlertDescription></Alert>}
+                }}>{t('Sign in with Google')}</Button>
+                {signInError && <Alert variant="destructive"><AlertDescription>{t('Could not sign in. Try again.')}</AlertDescription></Alert>}
               </CardContent>
             </Card>}
     </main>
   </>;
+}
+
+function App() {
+  const [language, setLanguage] = useState<StudioLanguage>(() => {
+    try { return localStorage.getItem(studioLanguageKey) === 'ko' ? 'ko' : 'en'; }
+    catch { return 'en'; }
+  });
+  useEffect(() => {
+    document.documentElement.lang = language;
+    try { localStorage.setItem(studioLanguageKey, language); } catch { /* Selection still applies to this tab. */ }
+  }, [language]);
+  return <StudioLanguageContext.Provider value={language}>
+    <Studio onLanguageChange={setLanguage} />
+  </StudioLanguageContext.Provider>;
 }
 
 createRoot(document.getElementById('root')!).render(<App />);
