@@ -15,6 +15,7 @@ stats.html
 .demo-runtime/
 .codex-deploy-audit-*
 .codex-tmp-deploy-*
+gha-creds-*.json
 agent_docs/
 .codex_workflow_hidden_resources/
 
