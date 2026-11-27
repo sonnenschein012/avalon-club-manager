@@ -66,6 +66,20 @@ type EditorPeriod = Exclude<ExhibitionSettings['period'], { kind: 'semester' }> 
 type PeriodRange = { start: string; end: string };
 const emptyRange: PeriodRange = { start: '', end: '' };
 
+function sameRange(left: PeriodRange, right: PeriodRange) {
+  return left.start === right.start && left.end === right.end;
+}
+
+function clean(values: Record<string, string | undefined>) {
+  return Object.fromEntries(Object.entries(values).flatMap(([key, value]) => value?.trim() ? [[key, value.trim()]] : []));
+}
+
+function sameOverrides(left: Record<string, string>, right: Record<string, string>) {
+  const entries = Object.entries(clean(left));
+  const cleanRight = clean(right);
+  return entries.length === Object.keys(cleanRight).length && entries.every(([key, value]) => cleanRight[key] === value);
+}
+
 function getEditorPeriod(period: ExhibitionSettings['period']): EditorPeriod {
   if (period.kind === 'semester') return { kind: 'semesterRange', start: period.semester, end: period.semester };
   if (period.kind === 'range' && period.semesters) return { kind: 'semesterRange', ...period.semesters };
@@ -284,6 +298,16 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
   const [publicationMessage, setPublicationMessage] = useState<{ text: StudioMessage; error?: boolean }>();
   const [busy, setBusy] = useState(false);
   const canEdit = section !== 'worklist' && (section !== 'pins' || Boolean(selectedGame));
+  const hasChanges = visibility !== savedForm.visibility || periodKind !== savedForm.periodKind ||
+    (visibility === 'temporary' && !sameRange(schedule, savedForm.schedule)) ||
+    (periodKind === 'semesterRange' && !sameRange(semesterRange, savedForm.semesterRange)) ||
+    (periodKind === 'range' && !sameRange(dateRange, savedForm.dateRange)) ||
+    Object.entries(exhibitionCopy).some(([key, fallback]) => {
+      const field = key as keyof ExhibitionCopy;
+      return (copy[field]?.trim() || fallback) !== (savedForm.copy[field]?.trim() || fallback);
+    }) || uploads.size > 0 || mapping.size !== savedPins.mapping.size ||
+    [...mapping].some(([key, value]) => savedPins.mapping.get(key) !== value) ||
+    !sameOverrides(descriptions, savedPins.descriptions) || !sameOverrides(images, savedPins.images);
 
   const [syncFailure, setSyncFailure] = useState<ExhibitionSyncError | null>(null);
   const requestSync = useRef<() => void>(() => {});
@@ -310,7 +334,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canEdit || busy || preparingImage) return;
+    if (!canEdit || !hasChanges || busy || preparingImage) return;
     if (visibility === 'temporary' && !exhibitionPublicationWindow(schedule)) {
       setMessage({ text: 'Check the publication dates.', error: true });
       return;
@@ -331,8 +355,6 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
       setMessage({ text: 'Use an HTTPS URL for each custom image.', error: true });
       return;
     }
-    const clean = (values: Record<string, string | undefined>) =>
-      Object.fromEntries(Object.entries(values).flatMap(([key, value]) => value?.trim() ? [[key, value.trim()]] : []));
     const savedCopy = clean(copy);
     const savedDescriptions = clean(descriptions);
     const savedImages = clean(Object.fromEntries(cleanImages));
@@ -434,6 +456,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
         : lastSync ? lastSyncLabel : t('No records published yet');
 
   function openSection(next: Section) {
+    if (next !== section) setMessage(undefined);
     setSection(next);
     history.replaceState(history.state, '', '#' + next);
   }
@@ -536,10 +559,12 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
           </CardContent>
         </Card>
       </Tabs>
-      {canEdit && <div className="mt-4 flex flex-wrap items-center gap-3">
-        <Button type="submit" disabled={busy || preparingImage}>{t(preparingImage ? 'Preparing image…' : 'Save changes')}</Button>
-        <Button type="button" variant="outline" disabled={busy || preparingImage} onClick={cancel}>{t('Cancel')}</Button>
-        {message && (message.error
+      {canEdit && (hasChanges || message) && <div className="mt-4 flex flex-wrap items-center gap-3">
+        {hasChanges && <>
+          <Button type="submit" disabled={busy || preparingImage}>{t(preparingImage ? 'Preparing image…' : 'Save changes')}</Button>
+          <Button type="button" variant="outline" disabled={busy || preparingImage} onClick={cancel}>{t('Cancel')}</Button>
+        </>}
+        {message && (message.error || !hasChanges) && (message.error
           ? <Alert variant="destructive" className="w-fit"><AlertDescription>{t(message.text)}</AlertDescription></Alert>
           : <p className="text-sm text-muted-foreground" role="status">{t(message.text)}</p>)}
       </div>}
@@ -603,7 +628,7 @@ function Studio({ onLanguageChange }: { onLanguageChange: (language: StudioLangu
           <img src="/brand/studio-light.svg" alt="" className="size-9 shrink-0" />
           <h1 className="text-base font-semibold tracking-tight sm:text-lg">AVALON Studio</h1>
         </div>
-        <div className="flex flex-wrap items-center gap-1">
+        <div className="flex flex-wrap items-center justify-end gap-1">
           <div role="group" aria-label={t('Studio language')} className="flex shrink-0 items-center rounded-md border p-0.5">
             {(['ko', 'en'] as const).map(option => <Button key={option} type="button" size="xs"
               className="h-6 w-[3.1rem] px-0 text-[11px]"

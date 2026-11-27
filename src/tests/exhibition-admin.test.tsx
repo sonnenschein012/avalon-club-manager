@@ -83,7 +83,25 @@ describe('exhibition admin settings', () => {
     expect(document.querySelector('[role="alert"]')?.textContent).toContain('Admin access is required');
     await act(async () => { mocks.authChanged?.({ uid: 'operator', email: 'operator@example.invalid' }); });
     expect(document.querySelector('h1')?.textContent).toBe('AVALON Studio');
+    const form = document.querySelector('form')!;
+    const editActions = () => [...form.querySelectorAll('button')]
+      .filter(button => button.type === 'submit' || button.textContent === 'Cancel')
+      .map(button => button.textContent);
+    const chooseVisibility = async (value: string) => {
+      await act(async () => { form.querySelector<HTMLButtonElement>(`button[role="radio"][value="${value}"]`)!.click(); });
+    };
+    expect(editActions()).toEqual([]);
+    await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    expect(mocks.save).not.toHaveBeenCalled();
+    await chooseVisibility('public');
+    expect(editActions()).toEqual(['Save changes', 'Cancel']);
+    await chooseVisibility('private');
+    expect(editActions()).toEqual([]);
+    await chooseVisibility('public');
+    await act(async () => { clickButton('Cancel'); });
+    expect(editActions()).toEqual([]);
     await act(async () => { press('[role="tab"][id$="-trigger-worklist"]', 'Enter'); });
+    expect(editActions()).toEqual([]);
     const worklist = document.querySelector('[role="tabpanel"][id$="-content-worklist"]')!;
     await act(async () => { clickButton('한국어'); });
     expect(document.documentElement.lang).toBe('ko');
@@ -182,6 +200,7 @@ describe('exhibition admin settings', () => {
     expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Exhibit text');
     expect(window.location.hash).toBe('#copy');
     expect(document.body.textContent).toContain('Changes saved. Updating records');
+    expect(editActions()).toEqual([]);
     expect(mocks.request).toHaveBeenCalledOnce();
     await act(async () => { clickButton('Publish records'); });
     expect(mocks.retry).toHaveBeenCalledOnce();
@@ -204,6 +223,7 @@ describe('exhibition admin settings', () => {
       new Map([[gameKey, upload]]));
     expect(document.body.textContent).toContain('Uploaded image');
     expect(document.body.textContent).not.toContain('New image ready to save');
+    expect(editActions()).toEqual([]);
     const replacement = { ...upload, version: 'upload:00000000-0000-4000-8000-000000000002' };
     mocks.prepareImage.mockResolvedValueOnce(replacement);
     await act(async () => {
@@ -228,14 +248,21 @@ describe('exhibition admin settings', () => {
     await act(async () => { document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
     expect(mocks.save).toHaveBeenCalledTimes(savesBeforeCancel);
     await act(async () => { clickButton('레지스탕스 아발론'); });
-    expect(document.querySelector('form button[type="submit"]')).not.toBeNull();
+    expect(document.querySelector('form button[type="submit"]')).toBeNull();
     expect(document.querySelector('h3')?.textContent).toBe('레지스탕스 아발론');
     expect(document.querySelector('textarea')).toHaveProperty('value', '새 핀 설명');
     expect(document.body.textContent).toContain('등록된 이미지');
     expect(document.body.textContent).not.toContain('새 이미지가 저장 대기 중입니다.');
     await act(async () => { clickButton('English'); press('[role="tab"][id$="-trigger-copy"]', 'Enter'); });
-    await act(async () => { change('input#entryTitle', '저장하지 않을 전시 제목'); clickButton('Cancel'); });
+    expect(editActions()).toEqual([]);
+    await act(async () => { change('input#entryTitle', '저장하지 않을 전시 제목'); });
+    expect(editActions()).toEqual(['Save changes', 'Cancel']);
+    await act(async () => { change('input#entryTitle', '우리의 컬렉션'); });
+    expect(editActions()).toEqual([]);
+    await act(async () => { change('input#entryTitle', '저장하지 않을 전시 제목'); });
+    await act(async () => { clickButton('Cancel'); });
     expect(document.querySelector('input#entryTitle')).toHaveProperty('value', '우리의 컬렉션');
+    expect(editActions()).toEqual([]);
     await act(async () => { press('[role="tab"][id$="-trigger-worklist"]', 'Enter'); });
     await act(async () => missingGame()!.click());
     await act(async () => {
