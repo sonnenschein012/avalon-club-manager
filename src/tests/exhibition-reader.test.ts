@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { createExhibitionReader } from '../../exhibition/reader';
+import { createPublicSessionsLoader } from '../../exhibition/publicSessions';
 import type { Firestore } from 'firebase/firestore';
 
 const firestore = vi.hoisted(() => ({ get: vi.fn() }));
@@ -10,7 +11,7 @@ vi.mock('firebase/firestore', () => ({
   onSnapshot: vi.fn(),
 }));
 
-afterEach(() => { vi.useRealTimers(); firestore.get.mockReset(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); firestore.get.mockReset(); });
 
 it('reuses the publication read started while typing', async () => {
   const reader = createExhibitionReader({} as Firestore, 'avalon');
@@ -39,4 +40,21 @@ it('ends a stalled name request at three seconds and a collection read at its re
   await profile;
   await vi.advanceTimersByTimeAsync(1_800);
   await name;
+});
+
+it('restores session order from a single exact-document batch read and detects a missing record', async () => {
+  const root = 'projects/test/databases/example/documents/exhibitionAccess/avalon/generations/42/sessions';
+  const row = (id: string, date: string) => ({ found: { name: `${root}/${id}`, fields: {
+    date: { stringValue: date }, groups: { arrayValue: {} },
+  } } });
+  const fetchMock = vi.fn().mockResolvedValueOnce(Response.json([row('b', '2026-11-15'), row('a', '2026-11-01')]))
+    .mockResolvedValueOnce(Response.json([row('b', '2026-11-15'), { missing: `${root}/a` }]));
+  vi.stubGlobal('fetch', fetchMock);
+  const load = createPublicSessionsLoader({ projectId: 'test', firestoreDatabaseId: 'example', apiKey: 'test' }, 'avalon');
+  const { signal } = new AbortController();
+
+  expect(await load('42', ['a', 'b'], signal)).toEqual([{ date: '2026-11-01', groups: [] }, { date: '2026-11-15', groups: [] }]);
+  expect(fetchMock).toHaveBeenCalledWith(expect.objectContaining({ pathname: '/v1/projects/test/databases/example/documents:batchGet' }),
+    expect.objectContaining({ signal, method: 'POST', body: JSON.stringify({ documents: [`${root}/a`, `${root}/b`] }) }));
+  expect(await load('42', ['a', 'b'], signal)).toBeNull();
 });

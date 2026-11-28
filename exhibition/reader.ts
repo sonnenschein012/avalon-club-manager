@@ -30,7 +30,8 @@ function publication(data: DocumentData | undefined): Publication | null {
     gameTitles: data.gameTitles ?? {}, ...(data.gamePins ? { gamePins: data.gamePins } : {}), endsAt: data.endsAt?.toMillis() };
 }
 
-export function createExhibitionReader(db: Firestore, exhibitionId: string) {
+export function createExhibitionReader(db: Firestore, exhibitionId: string,
+  publicSessions?: (generation: string, ids: readonly string[], signal: AbortSignal) => Promise<PublicExhibitionSession[] | null>) {
   const access = doc(db, 'exhibitionAccess', exhibitionId);
   const appearance = doc(db, 'exhibitionPinAppearance', exhibitionId);
   let nameLookup: { publication: Publication; candidates: Set<string>; expiresAt: number } | undefined;
@@ -103,11 +104,10 @@ export function createExhibitionReader(db: Firestore, exhibitionId: string) {
         const { record, ...active } = await readActive<ExhibitionProfile | ExhibitionParticipation>('profiles', id, signal, previous);
         if (!record || !('sessionIds' in record)) return { ...active, record };
         try {
-          const sessions = await Promise.all(record.sessionIds.map(sessionId =>
-            getDocFromServer(doc(access, 'generations', active.id, 'sessions', sessionId))));
+          const sessions = publicSessions ? await publicSessions(active.id, record.sessionIds, signal) : await loadSessions(active.id, record.sessionIds);
           signal.throwIfAborted();
-          if (sessions.some(session => !session.exists())) return null;
-          const data = exhibitionProfileFromSessions(id, record, sessions.map(snapshot => snapshot.data() as PublicExhibitionSession));
+          if (!sessions) return null;
+          const data = exhibitionProfileFromSessions(id, record, sessions);
           return { ...active, record: { ...data, gameTitles: active.gameTitles,
             ...(active.gamePins ? { gamePins: active.gamePins } : {}) } };
         } catch (error) {
@@ -121,6 +121,11 @@ export function createExhibitionReader(db: Firestore, exhibitionId: string) {
       if (retry) return retry;
       throw new Error('전시 세션 기록을 불러올 수 없습니다.');
     }, deadline);
+  }
+
+  async function loadSessions(generation: string, ids: readonly string[]) {
+    const sessions = await Promise.all(ids.map(id => getDocFromServer(doc(access, 'generations', generation, 'sessions', id))));
+    return sessions.every(snapshot => snapshot.exists()) ? sessions.map(snapshot => snapshot.data() as PublicExhibitionSession) : null;
   }
 
   const loadExhibitionProfile = async (id: string) => (await loadExhibitionView(id)).record;
