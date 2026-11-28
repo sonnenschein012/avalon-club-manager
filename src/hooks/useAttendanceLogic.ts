@@ -40,6 +40,8 @@ import { moveAttendee } from '../domain/attendance/moveAttendee';
 import { nextSessionName } from '../domain/attendance/dailySession';
 import { convertAttendeeIdsToMemberIds, convertAttendeeIdsToPlanningGroups } from '../domain/attendance/sessionGroups';
 import { addAuditEventToTransaction } from '../services/auditService';
+import { projectExhibitionSession } from '../domain/exhibition/sessionChanges';
+import { reserveSessionAuditSequence } from '../services/sessionAuditSequence';
 import { archiveDailyPlanning } from '../services/dailyPlanningService';
 import type { AttendanceImportInput } from '../domain/attendance/csvParser';
 import type { AttendanceMemberDraft } from '../domain/members/attendanceRegistration';
@@ -315,6 +317,7 @@ export function useAttendanceLogic({ onMoveToRecord, draftScope }: UseAttendance
     const result = await runAction('attendance-save', () => runTransaction(db, async transaction => {
       const planningRef = doc(db, 'DailyPlannings', sessionDate);
       const planningSnapshot = await transaction.get(planningRef);
+      const nextSequence = await reserveSessionAuditSequence(transaction);
       // Parent reads serialize concurrent starts, including retries of this query.
       const sameDay = await getDocs(query(collection(db, 'sessions'), where('date', '>=', Timestamp.fromDate(new Date(sessionDate))), where('date', '<', Timestamp.fromMillis(new Date(sessionDate).getTime() + 86400000))));
       const daySessions = sameDay.docs.map(item => ({ ...item.data(), id: item.id }) as Session);
@@ -357,6 +360,8 @@ export function useAttendanceLogic({ onMoveToRecord, draftScope }: UseAttendance
         targetLabel: name,
         count: assignedAttendees.length,
         detail: `${sessionDate} · ${mappedGroups.length}개 조 · 배정 ${assignedAttendees.length}명`,
+        exhibitionChange: { kind: 'created', session: projectExhibitionSession({ date: sessionDate, groups: mappedGroups }) },
+        sessionSequence: nextSequence(),
       });
 
     }), {

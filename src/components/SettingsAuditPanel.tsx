@@ -20,6 +20,9 @@ function AuditRow({ event }: { event: AuditEvent }) {
             <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-600">
               {AUDIT_CATEGORY_LABELS[event.category]}
             </span>
+            {event.sessionSequence !== undefined && (
+              <span className="text-[11px] font-bold text-slate-500">s{event.sessionSequence}</span>
+            )}
             {event.count !== undefined && (
               <span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">{event.count}건</span>
             )}

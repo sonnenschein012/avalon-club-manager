@@ -28,6 +28,8 @@ function sendSettings(autoPublish?: boolean, fromCache = false) {
   });
 }
 
+const attempts = () => mocks.read.mock.calls.filter(([path]) => path === 'exhibitionSync/source').length;
+
 describe('exhibition publication retry', () => {
   afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); });
 
@@ -46,15 +48,15 @@ describe('exhibition publication retry', () => {
       expect(mocks.listen).toHaveBeenCalledTimes(1);
       request();
       await vi.advanceTimersByTimeAsync(120_000);
-      expect(mocks.read).toHaveBeenCalledTimes(1);
+      expect(attempts()).toBe(1);
       sendSettings(true);
-      expect(mocks.listen.mock.calls.slice(1).map(([path]) => path)).toEqual(['sessions', 'members', 'games']);
+      expect(mocks.listen.mock.calls.slice(1).map(([path]) => path)).toEqual(['auditSequences/sessions', 'members', 'games']);
       await vi.advanceTimersByTimeAsync(2_000);
-      expect(mocks.read).toHaveBeenCalledTimes(2);
+      expect(attempts()).toBe(2);
       sendSettings(false);
       expect(mocks.unsubscribe).toHaveBeenCalledTimes(3);
       await vi.advanceTimersByTimeAsync(120_000);
-      expect(mocks.read).toHaveBeenCalledTimes(2);
+      expect(attempts()).toBe(2);
     } finally { stop(); }
   });
 
@@ -68,13 +70,13 @@ describe('exhibition publication retry', () => {
       sendSettings(true);
       await vi.advanceTimersByTimeAsync(500);
       expect(status).toHaveBeenLastCalledWith('quota');
-      expect(mocks.read).toHaveBeenCalledTimes(1);
+      expect(attempts()).toBe(1);
       request();
       window.dispatchEvent(new Event('online'));
       await vi.advanceTimersByTimeAsync(29 * 60_000);
-      expect(mocks.read).toHaveBeenCalledTimes(1);
+      expect(attempts()).toBe(1);
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(mocks.read).toHaveBeenCalledTimes(2);
+      expect(attempts()).toBe(2);
     } finally { stop(); }
   });
 });

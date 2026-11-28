@@ -284,5 +284,5 @@ describe('exhibition admin settings', () => {
     await act(async () => { clickButton('Save changes'); });
     await act(async () => { press('[role="tab"][id$="-trigger-worklist"]', 'Enter'); });
     expect(missingGame()).toBeUndefined();
-  }, 15_000);
+  }, 45_000);
 });

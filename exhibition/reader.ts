@@ -1,5 +1,6 @@
 import { Bytes, doc, getDocFromServer, onSnapshot, type DocumentData, type Firestore } from 'firebase/firestore';
-import { exhibitionNameKey, type ExhibitionProfile } from '../src/domain/exhibition/collection';
+import { exhibitionNameKey, exhibitionProfileFromSessions, type ExhibitionParticipation, type ExhibitionProfile,
+  type PublicExhibitionSession } from '../src/domain/exhibition/collection';
 import { exhibitionCopy, isExhibitionImageUpload, type ExhibitionCopy } from '../src/domain/exhibition/presentation';
 import { withFirestoreDeadline } from '../src/lib/firestoreDeadline';
 
@@ -19,13 +20,14 @@ interface Publication {
   descriptions: Record<string, string>;
   images: Record<string, string>;
   gameTitles: Record<string, string>;
+  gamePins?: Record<string, string>;
   endsAt: number | undefined;
 }
 
 function publication(data: DocumentData | undefined): Publication | null {
   if (data?.enabled !== true || typeof data.generationId !== 'string' || !data.generationId) return null;
   return { id: data.generationId, contentRevision: data.contentRevision, descriptions: data.descriptions ?? {}, images: data.images ?? {},
-    gameTitles: data.gameTitles ?? {}, endsAt: data.endsAt?.toMillis() };
+    gameTitles: data.gameTitles ?? {}, ...(data.gamePins ? { gamePins: data.gamePins } : {}), endsAt: data.endsAt?.toMillis() };
 }
 
 export function createExhibitionReader(db: Firestore, exhibitionId: string) {
@@ -96,7 +98,29 @@ export function createExhibitionReader(db: Firestore, exhibitionId: string) {
     const lookup = nameLookup;
     nameLookup = undefined;
     const recent = lookup && lookup.candidates.has(id) && Date.now() < lookup.expiresAt ? lookup.publication : undefined;
-    return withFirestoreDeadline(signal => readActive<ExhibitionProfile>('profiles', id, signal, published ?? recent), deadline);
+    return withFirestoreDeadline(async signal => {
+      async function load(previous?: Publication) {
+        const { record, ...active } = await readActive<ExhibitionProfile | ExhibitionParticipation>('profiles', id, signal, previous);
+        if (!record || !('sessionIds' in record)) return { ...active, record };
+        try {
+          const sessions = await Promise.all(record.sessionIds.map(sessionId =>
+            getDocFromServer(doc(access, 'generations', active.id, 'sessions', sessionId))));
+          signal.throwIfAborted();
+          if (sessions.some(session => !session.exists())) return null;
+          const data = exhibitionProfileFromSessions(id, record, sessions.map(snapshot => snapshot.data() as PublicExhibitionSession));
+          return { ...active, record: { ...data, gameTitles: active.gameTitles,
+            ...(active.gamePins ? { gamePins: active.gamePins } : {}) } };
+        } catch (error) {
+          if ((error as { code?: string }).code !== 'permission-denied') throw error;
+          return null;
+        }
+      }
+      const result = await load(published ?? recent);
+      if (result) return result;
+      const retry = await load(await generation(signal));
+      if (retry) return retry;
+      throw new Error('전시 세션 기록을 불러올 수 없습니다.');
+    }, deadline);
   }
 
   const loadExhibitionProfile = async (id: string) => (await loadExhibitionView(id)).record;

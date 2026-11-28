@@ -1,11 +1,13 @@
 import { withFirestoreDeadline } from '../lib/firestoreDeadline';
-import { collection, doc, getDocs, query, where, deleteField, Timestamp, writeBatch, runTransaction } from 'firebase/firestore';
+import { collection, doc, getDocs, query, where, deleteField, Timestamp, runTransaction } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import type { Session, StoredSessionGroup } from '../types';
 import type { ImportedSession } from '../domain/sessions/sessionCsv';
 import { mergeSessionGroups, normalizeSessionGroup } from '../domain/sessions/sessionGroups';
-import { addAuditEventToBatch, addAuditEventToTransaction } from './auditService';
+import { addAuditEventToTransaction } from './auditService';
 import type { AuditChange } from '../domain/audit/auditEvent';
+import { exhibitionSessionChange, projectExhibitionSession } from '../domain/exhibition/sessionChanges';
+import { reserveSessionAuditSequence } from './sessionAuditSequence';
 
 interface SessionDraft {
   name: string;
@@ -37,9 +39,11 @@ export async function importSessionRecords(sessions: readonly ImportedSession[])
   // A single atomic import rejects every collision rather than overwriting history.
   if (sessions.length > 400) throw new Error('한 번에 400개 이하의 세션을 가져와 주세요.');
   const records = sessions.map(session => ({ session, ref: session.id ? doc(db, 'sessions', session.id) : doc(collection(db, 'sessions')) }));
+  if (!records.length) return;
   await runTransaction(db, async transaction => {
     const snapshots = await Promise.all(records.map(record => transaction.get(record.ref)));
     if (snapshots.some(snapshot => snapshot.exists())) throw new Error('이미 존재하는 세션 ID가 있습니다. 기존 기록 보호를 위해 가져오기를 취소했습니다.');
+    const nextSequence = await reserveSessionAuditSequence(transaction);
     records.forEach(({ session, ref }) => {
       const { id: _id, ...data } = session;
       void _id;
@@ -49,29 +53,29 @@ export async function importSessionRecords(sessions: readonly ImportedSession[])
         groups: session.groups.map(group => normalizeSessionGroup({ ...group, id: group.id || doc(collection(db, 'sessions')).id })),
       });
     });
-    if (records.length) {
-      addAuditEventToTransaction(transaction, { category: 'session', action: 'session.imported', targetLabel: `모임 기록 ${records.length}개`, count: records.length });
-    }
+    addAuditEventToTransaction(transaction, {
+      category: 'session', action: 'session.imported', targetLabel: `모임 기록 ${records.length}개`, count: records.length,
+      exhibitionChange: { kind: 'imported', sessionIds: records.map(({ ref }) => ref.id) },
+      sessionSequence: nextSequence(),
+    });
   });
 }
 
 export async function createSessionRecord(draft: SessionDraft, boardMemberIds: string[]) {
   const sessionRef = doc(collection(db, 'sessions'));
-  const batch = writeBatch(db);
-  batch.set(sessionRef, {
-    name: draft.name,
-    date: Timestamp.fromDate(new Date(draft.date)),
-    groups: draft.groups.map(normalizeSessionGroup),
-    boardMemberIds,
+  const groups = draft.groups.map(normalizeSessionGroup);
+  await runTransaction(db, async transaction => {
+    const nextSequence = await reserveSessionAuditSequence(transaction);
+    transaction.set(sessionRef, {
+      name: draft.name, date: Timestamp.fromDate(new Date(draft.date)), groups, boardMemberIds,
+    });
+    addAuditEventToTransaction(transaction, {
+      category: 'session', action: 'session.created', targetId: sessionRef.id, targetLabel: draft.name,
+      detail: `${draft.date} · ${groupsSummary(draft.groups)}`,
+      exhibitionChange: { kind: 'created', session: projectExhibitionSession({ date: draft.date, groups }) },
+      sessionSequence: nextSequence(),
+    });
   });
-  addAuditEventToBatch(batch, {
-    category: 'session',
-    action: 'session.created',
-    targetId: sessionRef.id,
-    targetLabel: draft.name,
-    detail: `${draft.date} · ${groupsSummary(draft.groups)}`,
-  });
-  await batch.commit();
 }
 
 export async function updateSessionRecord(
@@ -85,20 +89,25 @@ export async function updateSessionRecord(
     const current = snapshot.exists() ? snapshot.data() as Session : undefined;
     if (!current) throw new Error('세션을 찾을 수 없습니다.');
     const nextGroups = mergeSessionGroups(current.groups || [], initialGroups, draft.groups);
+    const changes = sessionChanges(current, draft, nextGroups);
+    const exhibitionChange = exhibitionSessionChange(projectExhibitionSession(current),
+      projectExhibitionSession({ date: draft.date, groups: nextGroups }));
+    const nextSequence = exhibitionChange && await reserveSessionAuditSequence(transaction);
     transaction.update(ref, {
       name: draft.name,
       date: Timestamp.fromDate(new Date(draft.date)),
       groups: nextGroups,
       ...(current.boardMemberIds !== undefined ? { boardMemberIds: current.boardMemberIds } : {}),
     });
-    const changes = sessionChanges(current, draft, nextGroups);
-    if (changes.length > 0) {
+    if (changes.length > 0 || exhibitionChange) {
       addAuditEventToTransaction(transaction, {
         category: 'session',
         action: 'session.updated',
         targetId: sessionId,
         targetLabel: draft.name,
         changes,
+        ...(exhibitionChange && { exhibitionChange }),
+        ...(nextSequence && { sessionSequence: nextSequence() }),
       });
     }
   });
@@ -116,26 +125,32 @@ export async function updateSessionGroupGames(
     const snapshot = await transaction.get(ref);
     signal.throwIfAborted();
     if (!snapshot.exists()) throw new Error('세션을 찾을 수 없습니다.');
-    const groups = (snapshot.data() as Session).groups || [];
+    const current = snapshot.data() as Session;
+    const groups = current.groups || [];
     const targetGroup = groups.find(group => group.id === groupId);
     if (!targetGroup) throw new Error('해당 조를 찾을 수 없습니다.');
     const gameLabels = (ids: string[]) => ids.map(id => gameTitlesById.get(id) ?? id).join(', ') || '없음';
-    transaction.update(ref, {
-      groups: groups.map(group => group.id === groupId ? { ...group, gameIds } : group),
-    });
+    const nextGroups = groups.map(group => group.id === groupId ? { ...group, gameIds } : group);
     const changes = [{
       field: 'gameIds',
       label: '플레이 게임',
       before: gameLabels(targetGroup.gameIds || []),
       after: gameLabels(gameIds),
     }].filter(change => change.before !== change.after);
-    if (changes.length > 0) {
+    const exhibitionChange = exhibitionSessionChange(projectExhibitionSession(current),
+      projectExhibitionSession({ date: current.date, groups: nextGroups }));
+    const nextSequence = exhibitionChange && await reserveSessionAuditSequence(transaction);
+    signal.throwIfAborted();
+    transaction.update(ref, { groups: nextGroups });
+    if (changes.length > 0 || exhibitionChange) {
       addAuditEventToTransaction(transaction, {
         category: 'session',
         action: 'session.group_games_updated',
         targetId: sessionId,
-        targetLabel: `${(snapshot.data() as Session).name} · ${targetGroup.name || '조'}`,
+        targetLabel: `${current.name} · ${targetGroup.name || '조'}`,
         changes,
+        ...(exhibitionChange && { exhibitionChange }),
+        ...(nextSequence && { sessionSequence: nextSequence() }),
       });
     }
   }, { maxAttempts: 3 }));
@@ -146,24 +161,27 @@ export async function deleteSessionRecord(sessionId: string, sessionName = '모�
     const linkedPlannings = await getDocs(query(collection(db, 'DailyPlannings'), where('sessionId', '==', sessionId)));
     signal.throwIfAborted();
     // Keep deletion and detachment atomic.
-    if (linkedPlannings.size + 2 > 500) throw new Error('연결된 모임이 너무 많아 삭제할 수 없습니다.');
+    if (linkedPlannings.size + 3 > 500) throw new Error('연결된 모임이 너무 많아 삭제할 수 없습니다.');
     const sessionRef = doc(db, 'sessions', sessionId);
     await runTransaction(db, async transaction => {
       signal.throwIfAborted();
       const [session, ...plannings] = await Promise.all([
         transaction.get(sessionRef), ...linkedPlannings.docs.map(planning => transaction.get(planning.ref)),
       ]);
+      const nextSequence = session.exists() ? await reserveSessionAuditSequence(transaction) : undefined;
       signal.throwIfAborted();
       for (const planning of plannings) {
         if (planning.data()?.sessionId === sessionId) transaction.update(planning.ref, { sessionId: deleteField() });
       }
-      if (!session.exists()) return;
+      if (!nextSequence) return;
       transaction.delete(sessionRef);
       addAuditEventToTransaction(transaction, {
         category: 'session',
         action: 'session.deleted',
         targetId: sessionId,
         targetLabel: sessionName,
+        exhibitionChange: { kind: 'deleted', session: projectExhibitionSession(session.data() as Session) },
+        sessionSequence: nextSequence(),
       });
     }, { maxAttempts: 3 });
   });

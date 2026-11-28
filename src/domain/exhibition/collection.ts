@@ -39,6 +39,21 @@ export interface ExhibitionProfile {
   gamePins?: Record<string, string>;
 }
 
+interface PublicParticipant {
+  profileId: string;
+  name: string;
+}
+
+export interface PublicExhibitionSession {
+  date: string;
+  groups: { participants: PublicParticipant[]; gameIds: string[] }[];
+}
+
+export interface ExhibitionParticipation {
+  name: string;
+  sessionIds: string[];
+}
+
 interface NameCandidate {
   profileId: string;
   yearLabel?: string;
@@ -49,6 +64,9 @@ async function documentKey(parts: string[]): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
+
+export const exhibitionSessionKey = (exhibitionId: string, sessionId: string) => documentKey([exhibitionId, 'session', sessionId]);
+export const exhibitionProfileKey = (exhibitionId: string, memberId: string) => documentKey([exhibitionId, memberId]);
 
 /** Exact lookup key shared by the administrator and public clients. */
 export async function exhibitionNameKey(name: string): Promise<string | null> {
@@ -74,10 +92,40 @@ function recordGroupGames(record: RecordedGames, gameIds: readonly string[]) {
   record.gameIds = Object.keys(counts);
 }
 
+function recordParticipation(days: Map<string, ExhibitionDay>, profileId: string, date: string,
+  participants: readonly PublicParticipant[], playedGames: readonly string[]) {
+  const entry = days.get(date) ?? { date, gameIds: [], companions: [] };
+  recordGroupGames(entry, playedGames);
+  for (const peer of participants) {
+    if (peer.profileId === profileId) continue;
+    const previous = entry.companions.find(person => person.profileId === peer.profileId);
+    const companion: Companion = previous ?? { profileId: peer.profileId, name: peer.name, gameIds: [] };
+    companion.groupCount = (companion.groupCount ?? 0) + 1;
+    companion.gameIds = [...new Set([...companion.gameIds, ...playedGames])];
+    if (!previous) entry.companions.push(companion);
+  }
+  days.set(date, entry);
+}
+
+function sortExhibitionDays(days: Iterable<ExhibitionDay>) {
+  return [...days].sort((a, b) => b.date.localeCompare(a.date));
+}
+
+export function exhibitionProfileFromSessions(profileId: string, participation: ExhibitionParticipation,
+  sessions: readonly PublicExhibitionSession[]): ExhibitionProfile {
+  const days = new Map<string, ExhibitionDay>();
+  for (const session of sessions) for (const group of session.groups) {
+    if (group.participants.some(member => member.profileId === profileId)) {
+      recordParticipation(days, profileId, session.date, group.participants, group.gameIds);
+    }
+  }
+  return { name: participation.name, days: sortExhibitionDays(days.values()) };
+}
+
 export async function buildExhibitionCollection(
   exhibitionId: string,
   period: ExhibitionPeriod,
-  sessions: readonly (Pick<Session, 'groups'> & { date: Session['date'] | string })[],
+  sessions: readonly (Pick<Session, 'groups'> & { id?: string; date: Session['date'] | string })[],
   members: readonly ExhibitionMember[],
   gameMapping: ReadonlyMap<string, string>,
   titlesBySourceId: ReadonlyMap<string, string> = new Map(),
@@ -85,12 +133,14 @@ export async function buildExhibitionCollection(
   const namedMembers = members.filter(member => normalizeMemberName(member.name));
   const identities = new Map(await Promise.all(namedMembers.map(async member => [
     member.id,
-    { ...member, profileId: await documentKey([exhibitionId, member.id]) },
+    { ...member, profileId: await exhibitionProfileKey(exhibitionId, member.id) },
   ] as const)));
   const daysByProfile = new Map<string, Map<string, ExhibitionDay>>();
   const unmappedGameIds = new Set<string>();
   const missingMemberIds = new Set<string>();
   const played = new Map<string, { title: string; pin: string | undefined }>();
+  const publicSessions = new Map<string, PublicExhibitionSession>();
+  const sessionsByProfile = new Map<string, Set<string>>();
 
   for (const session of sessions) {
     // Older sessions can store a calendar date string.
@@ -98,6 +148,8 @@ export async function buildExhibitionCollection(
     if (!Number.isFinite(value.getTime())) continue;
     const day = koreaDateKey(value);
     if (!includesDate(period, day)) continue;
+    const publicId = session.id ? await exhibitionSessionKey(exhibitionId, session.id) : undefined;
+    const publicGroups: PublicExhibitionSession['groups'] = [];
 
     for (const group of session.groups) {
       const participants = [...new Set(group.memberIds ?? [])].flatMap(id => {
@@ -119,32 +171,34 @@ export async function buildExhibitionCollection(
       }
 
       const playedGames = [...gameIds];
+      if (publicId && participants.length) publicGroups.push({
+        participants: participants.map(({ profileId, name }) => ({ profileId, name })), gameIds: playedGames,
+      });
       for (const member of participants) {
         const days = daysByProfile.get(member.profileId) ?? new Map<string, ExhibitionDay>();
-        const entry = days.get(day) ?? { date: day, gameIds: [], companions: [] };
-        recordGroupGames(entry, playedGames);
-        for (const peer of participants) {
-          if (peer.id === member.id) continue;
-          const previous = entry.companions.find(person => person.profileId === peer.profileId);
-          const companion: Companion = previous ?? { profileId: peer.profileId, name: peer.name, gameIds: [] };
-          companion.groupCount = (companion.groupCount ?? 0) + 1;
-          companion.gameIds = [...new Set([...companion.gameIds, ...playedGames])];
-          if (!previous) entry.companions.push(companion);
-        }
-        days.set(day, entry);
+        recordParticipation(days, member.profileId, day, participants, playedGames);
         daysByProfile.set(member.profileId, days);
+        if (publicId) {
+          const links = sessionsByProfile.get(member.profileId) ?? new Set();
+          links.add(publicId);
+          sessionsByProfile.set(member.profileId, links);
+        }
       }
     }
+    if (publicId && publicGroups.length) publicSessions.set(publicId, { date: day, groups: publicGroups });
   }
 
   const profiles = new Map<string, ExhibitionProfile>();
+  const participation = new Map<string, ExhibitionParticipation>();
   const names = new Map<string, { candidates: NameCandidate[] }>();
   for (const member of identities.values()) {
     const days = daysByProfile.get(member.profileId);
     const nameKey = days && await exhibitionNameKey(member.name);
     if (!days || !nameKey) continue;
+    const links = sessionsByProfile.get(member.profileId);
+    if (links) participation.set(member.profileId, { name: member.name, sessionIds: [...links] });
 
-    const sortedDays = [...days.values()].sort((a, b) => b.date.localeCompare(a.date));
+    const sortedDays = sortExhibitionDays(days.values());
     const ids = [...new Set(sortedDays.flatMap(day => day.gameIds))];
     const gameTitles = Object.fromEntries(ids.flatMap(id => {
       const title = played.get(id)?.title;
@@ -171,7 +225,12 @@ export async function buildExhibitionCollection(
     }
   }
 
-  return { profiles, names, unmappedGameIds: [...unmappedGameIds].sort(), missingMemberIds: [...missingMemberIds].sort() };
+  const visibleGameIds = new Set([...profiles.values()].flatMap(profile => profile.days.flatMap(day => day.gameIds)));
+  const publicGames = [...played].filter(([id]) => visibleGameIds.has(id));
+  const gameTitles = Object.fromEntries(publicGames.flatMap(([id, game]) => game.title ? [[id, game.title]] : []));
+  const gamePins = Object.fromEntries(publicGames.flatMap(([id, game]) => game.pin ? [[id, game.pin]] : []));
+  return { profiles, names, participation, publicSessions, gameTitles, gamePins,
+    unmappedGameIds: [...unmappedGameIds].sort(), missingMemberIds: [...missingMemberIds].sort() };
 }
 
 /** Provide each pin once with the dates it was played, optionally with one companion. */

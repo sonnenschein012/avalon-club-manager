@@ -1,3 +1,5 @@
+import type { ExhibitionSessionChange } from '../exhibition/sessionChanges';
+
 export const AUDIT_CATEGORY_LABELS = {
   admin: '관리자',
   member: '동아리원',
@@ -102,6 +104,8 @@ export interface AuditEventInput {
   changes?: AuditChange[];
   detail?: string;
   count?: number;
+  exhibitionChange?: ExhibitionSessionChange;
+  sessionSequence?: number;
 }
 
 export interface AuditEvent extends AuditEventInput {

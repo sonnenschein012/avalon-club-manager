@@ -15,6 +15,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import type { AuditEvent, AuditEventInput } from '../domain/audit/auditEvent';
+import { sessionAuditEventId } from './sessionAuditSequence';
 
 const AUDIT_TEXT_LIMITS = {
   targetLabel: 300,
@@ -56,6 +57,8 @@ function auditEventData(input: AuditEventInput): DocumentData {
     ...(changes && changes.length > 0 ? { changes } : {}),
     ...(input.detail ? { detail: truncateAuditText(input.detail, AUDIT_TEXT_LIMITS.detail) } : {}),
     ...(input.count !== undefined ? { count: input.count } : {}),
+    ...(input.exhibitionChange ? { exhibitionChange: input.exhibitionChange } : {}),
+    ...(input.sessionSequence !== undefined ? { sessionSequence: input.sessionSequence } : {}),
     schemaVersion: 1,
   };
 }
@@ -83,7 +86,7 @@ export function addAuditEventToBatch(batch: WriteBatch, input: AuditEventInput):
 }
 
 export function addAuditEventToTransaction(transaction: Transaction, input: AuditEventInput): DocumentReference {
-  const eventRef = createAuditEventRef();
+  const eventRef = input.sessionSequence === undefined ? createAuditEventRef() : doc(db, 'auditEvents', sessionAuditEventId(input.sessionSequence));
   transaction.set(eventRef, auditEventData(input));
   return eventRef;
 }

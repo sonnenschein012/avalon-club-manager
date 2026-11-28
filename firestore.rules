@@ -267,9 +267,9 @@ service cloud.firestore {
     }
 
     // Human-readable operator history. Events are append-only in the web app,
-    // use the authenticated email, and can be reviewed only by a master.
+    // use the authenticated email. Regular administrators only read session events.
     match /auditEvents/{eventId} {
-      allow read: if isMasterAdmin();
+      allow read: if isMasterAdmin() || (isAdmin() && resource.data.category == 'session');
       allow create: if (isAdmin() || isMasterAdmin()) &&
         request.resource.data.keys().hasAll([
           'category', 'action', 'actorEmail', 'occurredAt',
@@ -278,7 +278,7 @@ service cloud.firestore {
         request.resource.data.keys().hasOnly([
           'category', 'action', 'actorEmail', 'occurredAt',
           'targetId', 'targetLabel', 'changes', 'detail', 'count',
-          'schemaVersion'
+          'schemaVersion', 'exhibitionChange', 'sessionSequence'
         ]) &&
         request.resource.data.category in [
           'admin', 'member', 'game', 'session', 'attendance', 'interview'
@@ -297,8 +297,46 @@ service cloud.firestore {
           (request.resource.data.detail is string && request.resource.data.detail.size() <= 10020)) &&
         (!('count' in request.resource.data) ||
           (request.resource.data.count is int && request.resource.data.count >= 0)) &&
+        (!('exhibitionChange' in request.resource.data) ||
+          (request.resource.data.category == 'session' && request.resource.data.exhibitionChange is map &&
+            validExhibitionChange(request.resource.data.exhibitionChange) && validSessionAuditSequence(eventId))) &&
+        (!('sessionSequence' in request.resource.data) || 'exhibitionChange' in request.resource.data) &&
         request.resource.data.schemaVersion == 1;
       allow update, delete: if false;
+    }
+
+    function validSessionAuditSequence(eventId) {
+      let counter = /databases/$(database)/documents/auditSequences/sessions;
+      return request.resource.data.sessionSequence is int &&
+        request.resource.data.sessionSequence == getAfter(counter).data.sequence &&
+        eventId == getAfter(counter).data.eventId &&
+        request.resource.data.sessionSequence == (exists(counter) ? get(counter).data.sequence + 1 : 1);
+    }
+
+    match /auditSequences/sessions {
+      allow get: if isAdmin() || isMasterAdmin();
+      allow create, update: if (isAdmin() || isMasterAdmin()) &&
+        request.resource.data.keys().hasOnly(['sequence', 'eventId']) && request.resource.data.sequence is int &&
+        request.resource.data.sequence == (resource == null ? 1 : resource.data.sequence + 1) &&
+        request.resource.data.eventId is string && request.resource.data.eventId.matches('session-[1-9][0-9]*') &&
+        getAfter(/databases/$(database)/documents/auditEvents/$(request.resource.data.eventId)).data.sessionSequence == request.resource.data.sequence;
+    }
+
+    function validExhibitionChange(change) {
+      return (
+        change.kind in ['created', 'deleted'] && change.keys().hasOnly(['kind', 'session']) &&
+        change.session is map && change.session.keys().hasOnly(['date', 'groups']) &&
+        change.session.date is string && change.session.groups is list
+      ) || (
+        change.kind == 'updated' && change.keys().hasOnly(['kind', 'date', 'groups']) &&
+        change.groups is list &&
+        (change.groups.size() > 0 || 'date' in change) &&
+        (!('date' in change) || (change.date is map && change.date.keys().hasOnly(['before', 'after']) &&
+          change.date.before is string && change.date.after is string))
+      ) || (
+        change.kind == 'imported' && change.keys().hasOnly(['kind', 'sessionIds']) &&
+        change.sessionIds is list && change.sessionIds.size() > 0 && change.sessionIds.size() <= 400
+      );
     }
 
     // Interview configuration and applicant personal data are always private.
@@ -393,6 +431,8 @@ service cloud.firestore {
         (id == 'progress' || (request.resource.data.revision ==
           (resource == null ? 1 : resource.data.revision + 1) &&
           // An older browser must not overwrite a newer projection format.
+          (request.resource.data.get('fingerprint', '').matches('projection-v6:[a-f0-9]{64}') ||
+          (resource == null || !resource.data.get('fingerprint', '').matches('projection-v6:.*')) &&
           (resource == null || !resource.data.get('fingerprint', '').matches('projection-v[2345]:.*') ||
             (resource.data.get('fingerprint', '').matches('projection-v2:.*') &&
               request.resource.data.get('fingerprint', '').matches('projection-v2:[a-f0-9]{64}')) ||
@@ -400,8 +440,15 @@ service cloud.firestore {
               request.resource.data.get('fingerprint', '').matches('projection-v3:[a-f0-9]{64}')) ||
             (!resource.data.get('fingerprint', '').matches('projection-v5:.*') &&
               request.resource.data.get('fingerprint', '').matches('projection-v4:[a-f0-9]{64}')) ||
-            request.resource.data.get('fingerprint', '').matches('projection-v5:[a-f0-9]{64}'))));
+            request.resource.data.get('fingerprint', '').matches('projection-v5:[a-f0-9]{64}')))));
       allow get: if isAdmin() && id in ['staging', 'cleanup'];
+      allow get: if isAdmin() && id == 'journal';
+      allow create, update: if isAdmin() && id == 'journal' &&
+        request.resource.data.keys().hasOnly(['revision', 'sequence', 'catalog', 'gameCounts']) &&
+        request.resource.data.revision is int && request.resource.data.sequence is int && request.resource.data.sequence >= 0 &&
+        request.resource.data.catalog is string && request.resource.data.catalog.matches('[a-f0-9]{64}') &&
+        request.resource.data.gameCounts is map &&
+        (resource == null || request.resource.data.sequence >= resource.data.sequence);
       allow create, update: if isAdmin() && (
         (id == 'staging' && request.resource.data.keys().hasOnly(['revision', 'offset']) &&
           request.resource.data.revision is int && request.resource.data.revision > 0 &&
@@ -498,7 +545,7 @@ service cloud.firestore {
       allow get: if isAdmin() || exhibitionIsOpen(resource.data);
       allow list, delete: if isAdmin();
       allow create, update: if isAdmin() &&
-        request.resource.data.keys().hasOnly(['enabled', 'generationId', 'contentRevision', 'descriptions', 'images', 'gameTitles', 'startsAt', 'endsAt']) &&
+        request.resource.data.keys().hasOnly(['enabled', 'generationId', 'contentRevision', 'descriptions', 'images', 'gameTitles', 'gamePins', 'format', 'startsAt', 'endsAt']) &&
         request.resource.data.enabled is bool &&
         request.resource.data.generationId is string &&
         request.resource.data.get('contentRevision', 0) is int && request.resource.data.get('contentRevision', 0) >= 0 &&
@@ -507,6 +554,10 @@ service cloud.firestore {
         request.resource.data.get('descriptions', {}) is map &&
         request.resource.data.get('images', {}) is map &&
         request.resource.data.get('gameTitles', {}) is map &&
+        request.resource.data.get('gamePins', {}) is map &&
+        request.resource.data.get('format', '') in ['', 'sessions-v1'] &&
+        (resource == null || !request.resource.data.enabled || resource.data.get('format', '') != 'sessions-v1' ||
+          request.resource.data.get('format', '') == 'sessions-v1') &&
         (!request.resource.data.generationId.matches('v2-.*') ||
           (resource != null && resource.data.generationId == request.resource.data.generationId)) &&
         keepsExhibitionWindow(exhibitionId, request.resource.data) &&
@@ -524,17 +575,21 @@ service cloud.firestore {
     }
 
     match /exhibitionAccess/{exhibitionId}/generations/{generationId}/{kind}/{entryId} {
-      allow get: if kind in ['names', 'profiles'] &&
+      allow get: if kind in ['names', 'profiles', 'sessions'] &&
         (isAdmin() || canReadExhibitionGeneration(exhibitionId, generationId));
-      allow list: if kind in ['names', 'profiles'] && isAdmin();
-      allow delete: if kind in ['names', 'profiles'] && isAdmin() &&
+      allow list: if kind in ['names', 'profiles', 'sessions'] && isAdmin();
+      allow delete: if kind in ['names', 'profiles', 'sessions'] && isAdmin() &&
         (!isActiveExhibitionGeneration(exhibitionId, generationId) || advancesActiveExhibition(exhibitionId, generationId));
       allow create, update: if isAdmin() && (
         (kind == 'names' && request.resource.data.keys().hasOnly(['candidates']) &&
           request.resource.data.candidates is list) ||
         (kind == 'profiles' && request.resource.data.keys().hasOnly(['name', 'days', 'gameTitles', 'gamePins']) &&
           request.resource.data.name is string && request.resource.data.days is list &&
-          request.resource.data.get('gameTitles', {}) is map && request.resource.data.get('gamePins', {}) is map)
+          request.resource.data.get('gameTitles', {}) is map && request.resource.data.get('gamePins', {}) is map) ||
+        (kind == 'profiles' && request.resource.data.keys().hasOnly(['name', 'sessionIds']) &&
+          request.resource.data.name is string && request.resource.data.sessionIds is list) ||
+        (kind == 'sessions' && request.resource.data.keys().hasOnly(['date', 'groups']) &&
+          request.resource.data.date is string && request.resource.data.groups is list)
       );
     }
 

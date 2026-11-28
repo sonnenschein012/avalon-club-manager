@@ -20,7 +20,7 @@ import {
 import { loadExhibitionSettings, loadExhibitionStatus, loadPublishedExhibitionGameKeys, refreshExhibitions, saveExhibitionSettings, watchExhibitionSync } from '../services/exhibitionSyncService';
 import { importSessionRecords, updateSessionGroupGames, deleteSessionRecord } from '../services/sessionsService';
 import { requestExhibitionRefresh } from '../services/exhibitionRevision';
-import { exhibitionNameKey } from '../domain/exhibition/collection';
+import { exhibitionNameKey, exhibitionSessionKey } from '../domain/exhibition/collection';
 import { fallbackExhibitionPin } from '../domain/exhibition/presentation';
 
 const sync = vi.hoisted(() => ({ db: undefined as ReturnType<RulesTestContext['firestore']> | undefined, beforeBuild: undefined as (() => Promise<void>) | undefined }));
@@ -372,6 +372,24 @@ describe('Firestore Security Rules', () => {
     expect(profile?.days[0]?.companions[0]).toMatchObject({ name: '합성 나래', gameIds: [fallbackExhibitionPin('avalon')] });
     expect(profile).not.toHaveProperty('phone');
 
+    const activeGeneration = beforeNoOp.generationId!;
+    const root = `exhibitionAccess/avalon/generations/${activeGeneration}`;
+    const sessionKey = await exhibitionSessionKey('avalon', 'meeting');
+    const storedParticipation = (await getDoc(doc(visitor, `${root}/profiles/${id}`))).data();
+    expect(storedParticipation).toEqual({ name: '합성 가람', sessionIds: expect.arrayContaining([sessionKey]) });
+    await assertFails(getDocs(collection(visitor, `${root}/sessions`)));
+    await assertSucceeds(getDoc(doc(visitor, `${root}/sessions/${sessionKey}`)));
+
+    await updateSessionGroupGames('meeting', 'new-group', ['coffee']);
+    expect((await loadExhibitionStatus('avalon')).pending).toBe(true);
+    const applied = await getDoc(doc(operator, 'auditSequences/sessions'));
+    await assertSucceeds(getDoc(doc(operator, `auditEvents/${applied.data()?.eventId}`)));
+    await assertFails(getDoc(doc(visitor, `auditEvents/${applied.data()?.eventId}`)));
+    await refreshExhibitions();
+    expect((await getDoc(doc(operator, 'exhibitionSync/journal'))).data()?.sequence).toBe(applied.data()?.sequence);
+    expect((await getDoc(doc(visitor, `${root}/profiles/${id}`))).data()).toEqual(storedParticipation);
+    expect((await publicReader.loadExhibitionProfile(id))?.days[0]?.gameIds).toEqual([fallbackExhibitionPin('coffee')]);
+
     await updateSessionGroupGames('meeting', 'new-group', ['coffee', 'other']);
     const changed = vi.fn();
     await Promise.all([refreshExhibitions(undefined, undefined, changed), refreshExhibitions(undefined, undefined, changed)]);
@@ -456,7 +474,7 @@ describe('Firestore Security Rules', () => {
         expect((await getDoc(doc(operator, path))).exists()).toBe(true);
       }, { timeout: 10_000, interval: 300 });
       const currentMarker = (await getDoc(marker)).data();
-      expect(currentMarker?.fingerprint).toMatch(/^projection-v5:[a-f0-9]{64}$/);
+      expect(currentMarker?.fingerprint).toMatch(/^projection-v6:[a-f0-9]{64}$/);
       await assertFails(setDoc(marker, {
         revision: Number(currentMarker?.revision) + 1,
         fingerprint: 'projection-v4:' + 'e'.repeat(64),
