@@ -55,7 +55,7 @@ describe('SettingsPage audit visibility', () => {
     await act(async () => root.render(<SettingsPage isMasterAdmin={false} isAdminModeActive={false}
       setIsAdminModeActive={vi.fn()} exhibition={{ phase: 'idle', failure: null, request }} />));
     const panel = container.querySelector('section[aria-labelledby="exhibition-settings-heading"]');
-    expect(panel?.textContent).toContain('공개 기록 반영 완료');
+    expect(panel?.textContent).toContain('마지막 공개 기록 표시 중');
     expect(panel?.textContent).toContain('컬렉션 12개');
     expect(panel?.querySelector('a')?.getAttribute('href')).toBe('https://avalon-collection-studio.web.app/');
     expect(panel?.querySelector('a')?.textContent).toContain('전시 설정 열기');

@@ -269,6 +269,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
     return Object.hasOwn(sections, hash) ? hash as Section : 'publication';
   });
   const [visibility, setVisibility] = useState<ExhibitionVisibility>(initial.visibility ?? (initial.enabled ? 'public' : 'private'));
+  const [autoPublish, setAutoPublish] = useState(initial.autoPublish === true);
   const [schedule, setSchedule] = useState(initial.schedule ?? emptyRange);
   const initialPeriod = getEditorPeriod(initial.period);
   const [periodKind, setPeriodKind] = useState(initialPeriod.kind);
@@ -284,7 +285,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
   const [uploads, setUploads] = useState(new Map<string, PreparedPinImage>());
   const [preparingImage, setPreparingImage] = useState(false);
   const [copy, setCopy] = useState<ExhibitionCopy>(initial.copy ?? {});
-  const [savedForm, setSavedForm] = useState({ visibility, schedule, periodKind, semesterRange, dateRange, copy });
+  const [savedForm, setSavedForm] = useState({ visibility, autoPublish, schedule, periodKind, semesterRange, dateRange, copy });
   const [sync, setSync] = useState<ExhibitionSyncStatus>('idle');
   const [status, setStatus] = useState<Awaited<ReturnType<typeof loadExhibitionStatus>>>();
   const [statusFailed, setStatusFailed] = useState(false);
@@ -297,7 +298,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
   const [message, setMessage] = useState<{ text: StudioMessage; error?: boolean }>();
   const [busy, setBusy] = useState(false);
   const canEdit = section !== 'worklist' && (section !== 'pins' || Boolean(selectedGame));
-  const hasChanges = visibility !== savedForm.visibility || periodKind !== savedForm.periodKind ||
+  const hasChanges = visibility !== savedForm.visibility || autoPublish !== savedForm.autoPublish || periodKind !== savedForm.periodKind ||
     (visibility === 'temporary' && !sameRange(schedule, savedForm.schedule)) ||
     (periodKind === 'semesterRange' && !sameRange(semesterRange, savedForm.semesterRange)) ||
     (periodKind === 'range' && !sameRange(dateRange, savedForm.dateRange)) ||
@@ -309,9 +310,9 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
     !sameOverrides(descriptions, savedPins.descriptions) || !sameOverrides(images, savedPins.images);
 
   const [syncFailure, setSyncFailure] = useState<ExhibitionSyncError | null>(null);
-  const requestSync = useRef<(fromButton?: boolean) => void>(() => {});
+  const requestSync = useRef<() => void>(() => {});
   useEffect(() => {
-    const watcher = watchExhibitionSync(setSync, setSyncFailure, 'requests');
+    const watcher = watchExhibitionSync(setSync, setSyncFailure, 'requests', exhibitionId);
     requestSync.current = watcher.request;
     return watcher.stop;
   }, []);
@@ -364,6 +365,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
     try {
       const needsSync = await saveExhibitionSettings(exhibitionId, {
         enabled: visibility !== 'private', visibility, period,
+        ...(autoPublish !== savedForm.autoPublish ? { autoPublish } : {}),
         ...(visibility === 'temporary' ? { schedule } : {}),
         gameMapping: [...mapping].map(([sourceId, pinId]) => ({ sourceId, pinId })),
         descriptions: savedDescriptions, images: savedImages, copy: savedCopy,
@@ -374,16 +376,13 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
       setSavedPins({ mapping, descriptions: savedDescriptions, images: savedImages });
       setUploads(new Map());
       setSavedForm({
-        visibility, periodKind, copy: savedCopy,
+        visibility, autoPublish, periodKind, copy: savedCopy,
         schedule: visibility === 'temporary' ? schedule : emptyRange,
         semesterRange: periodKind === 'semesterRange' ? semesterRange : emptyRange,
         dateRange: periodKind === 'range' ? dateRange : emptyRange,
       });
-      setMessage({ text: 'Changes saved.' });
-      if (needsSync) {
-        setMessage({ text: 'Changes saved. Updating records…' });
-        requestSync.current(false);
-      }
+      setMessage({ text: needsSync && !autoPublish
+        ? 'Changes saved. Publish records to apply them to the exhibit.' : 'Changes saved.' });
     } catch {
       setMessage({ text: 'Could not save changes. Try again.', error: true });
     } finally {
@@ -405,6 +404,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
 
   function cancel() {
     setVisibility(savedForm.visibility);
+    setAutoPublish(savedForm.autoPublish);
     setSchedule(savedForm.schedule);
     setPeriodKind(savedForm.periodKind);
     setSemesterRange(savedForm.semesterRange);
@@ -438,7 +438,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
   const syncLabel = sync === 'syncing' ? t('Publishing records…')
     : sync === 'quota' ? t('Publication paused · Firestore usage limit')
     : sync === 'current' ? t('Published records are up to date.')
-    : sync === 'error' && status?.pending !== false ? t('Publication failed · retrying')
+    : sync === 'error' ? t('Publication failed')
       : status?.pending || (sync === 'pending' && !status) ? t('Publication pending')
         : lastSync ? lastSyncLabel : t('No records published yet');
 
@@ -491,6 +491,17 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
                   <SemesterField label={t('End semester')} value={semesterRange.end} onChange={end => setSemesterRange({ ...semesterRange, end })} />
                 </div>}
                 {periodKind === 'range' && <DateRange startLabel={t('First record date')} endLabel={t('Last record date')} value={dateRange} onChange={setDateRange} />}
+                <div className="grid gap-2 border-t pt-5">
+                  <Label htmlFor="auto-publish" className="min-h-8">
+                    <input id="auto-publish" type="checkbox" checked={autoPublish}
+                      aria-describedby="auto-publish-hint" className="size-4 accent-primary"
+                      onChange={event => setAutoPublish(event.target.checked)} />
+                    {t('Automatically publish records')}
+                  </Label>
+                  <p id="auto-publish-hint" className="text-sm text-muted-foreground">
+                    {t('When off, use Publish records to update the public collection. Automatic publishing runs in a signed-in admin browser.')}
+                  </p>
+                </div>
               </TabsContent>
               <TabsContent value="pins" forceMount className="data-[state=inactive]:hidden">
                 <PinEditor games={games} selected={selectedGame} active={section === 'pins'} onSelect={setSelectedGame}

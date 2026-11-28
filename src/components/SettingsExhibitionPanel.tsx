@@ -21,7 +21,7 @@ export default function SettingsExhibitionPanel({ phase, failure, request }: Exh
     : phase === 'current' ? '공개 기록이 이미 최신입니다.'
     : phase === 'pending' || status?.pending ? '공개 기록 반영 대기'
     : statusError ? '반영 상태를 확인하지 못했습니다' : !status ? '반영 상태 확인 중'
-    : status.published ? '공개 기록 반영 완료' : '공개된 기록 없음';
+    : status.published ? '마지막 공개 기록 표시 중' : '공개된 기록 없음';
 
   return (
     <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm" aria-labelledby="exhibition-settings-heading">

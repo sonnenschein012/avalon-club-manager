@@ -30,7 +30,7 @@ const korean = {
   'Ended': '공개 종료',
   'Public · scheduled': '공개 중 · 기간 지정',
   'Publishing records…': '공개 기록을 반영하고 있습니다…',
-  'Publication failed · retrying': '반영 실패 · 다시 시도 중',
+  'Publication failed': '공개 기록 반영 실패',
   'Publication paused · Firestore usage limit': 'Firestore 사용 한도로 반영 일시 중지',
   'Published records are up to date.': '공개 기록이 이미 최신입니다.',
   'Publication pending': '반영 대기',
@@ -39,6 +39,9 @@ const korean = {
   'Record publication:': '공개 기록 반영',
   'Visibility': '공개 여부',
   'Record range': '공개할 기록 범위',
+  'Automatically publish records': '공개 기록 자동 반영',
+  'When off, use Publish records to update the public collection. Automatic publishing runs in a signed-in admin browser.':
+    '끄면 공개 기록 반영 버튼으로 직접 반영합니다. 자동 반영은 관리자가 로그인한 브라우저에서 작동합니다.',
   'All records': '전체 기록',
   'Semesters': '학기',
   'Dates': '날짜',
@@ -109,7 +112,8 @@ const korean = {
   'Save fewer image files at a time.': '한 번에 저장할 이미지 파일 수를 줄여 주세요.',
   'Use an HTTPS URL for each custom image.': '외부 이미지 주소는 HTTPS URL을 입력해 주세요.',
   'Changes saved.': '변경 사항을 저장했습니다.',
-  'Changes saved. Updating records…': '변경 사항을 저장했습니다. 공개 기록을 반영하고 있습니다…',
+  'Changes saved. Publish records to apply them to the exhibit.':
+    '설정을 저장했습니다. 공개 기록 반영 버튼을 눌러 전시에 적용하세요.',
   'Could not save changes. Try again.': '변경 사항을 저장하지 못했습니다. 다시 시도해 주세요.',
   'Could not prepare this image.': '이 이미지를 처리하지 못했습니다.',
   'Choose a PNG, JPEG, or WebP file under 16 MB.': '16MB 미만의 PNG, JPEG 또는 WebP 파일을 선택해 주세요.',

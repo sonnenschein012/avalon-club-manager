@@ -15,6 +15,7 @@ import type { Member, Session } from '../types';
 
 export interface ExhibitionSettings {
   enabled: boolean;
+  autoPublish?: boolean;
   period: ExhibitionPeriod;
   gameMapping: { sourceId: string; pinId: string }[];
   descriptions?: Record<string, string>;
@@ -104,7 +105,9 @@ export async function saveExhibitionSettings(exhibitionId: string, settings: Exh
     const previous = saved.data() as ExhibitionSettings | undefined;
     const needsSync = settings.enabled && (!previous?.enabled || !current.data()?.generationId ||
       recordSettingsKey(previous) !== recordSettingsKey(settings));
-    if (canonical(previous) !== canonical(settings)) transaction.set(settingsRef, settings);
+    const nextSettings = previous?.autoPublish === undefined ? settings
+      : { ...settings, autoPublish: settings.autoPublish ?? previous.autoPublish };
+    if (canonical(previous) !== canonical(nextSettings)) transaction.set(settingsRef, nextSettings);
     if (settings.copy && canonical(savedCopy?.data()?.copy) !== canonical(settings.copy)) {
       transaction.set(copyRef, { copy: settings.copy });
     }
@@ -457,12 +460,17 @@ export function watchExhibitionSync(
   setStatus: (status: ExhibitionSyncStatus) => void,
   setError: (failure: ExhibitionSyncError | null) => void,
   watch: 'sources' | 'requests',
+  exhibitionId = import.meta.env.VITE_EXHIBITION_ID || 'avalon',
 ) {
   const controller = new AbortController();
   let stopped = false;
   let running = false;
   let requested = false;
   let manual = false;
+  let automatic = false;
+  let automaticRun: AbortController | undefined;
+  let watches: (() => void)[] = [];
+  let quotaTimer: ReturnType<typeof setTimeout> | undefined;
   let failures = 0;
   let quotaPauseUntil = 0;
   let retryPauseUntil = 0;
@@ -472,7 +480,7 @@ export function watchExhibitionSync(
   let retry: ReturnType<typeof setTimeout> | undefined;
 
   function schedule(delay = 500) {
-    if (stopped) return;
+    if (stopped || (!automatic && !manual)) return;
     requested = true;
     if (running) return;
     clearTimeout(retry);
@@ -495,6 +503,11 @@ export function watchExhibitionSync(
   }
 
   async function run() {
+    if (stopped || (!automatic && !manual)) return;
+    const fromButton = manual;
+    const background = fromButton ? undefined : new AbortController();
+    automaticRun = background;
+    const signal = background ? AbortSignal.any([controller.signal, background.signal]) : controller.signal;
     running = true;
     lastScanAt = Date.now();
     requested = false;
@@ -503,70 +516,102 @@ export function watchExhibitionSync(
     let outcome: SyncOutcome | undefined;
     let failure: ExhibitionSyncError | undefined;
     try {
-      done = await refreshExhibitions(error => { failure = error; }, controller.signal, result => { outcome = result; });
+      done = await refreshExhibitions(error => { failure = error; }, signal, result => { outcome = result; });
       failures = 0;
       quotaPauseUntil = 0;
       retryPauseUntil = 0;
+      clearTimeout(quotaTimer);
     } catch {
-      failures++;
-      if (failure?.code === 'resource-exhausted') quotaPauseUntil = Date.now() + 30 * 60_000;
-      else if (failures >= 3) retryPauseUntil = Date.now() + 15 * 60_000;
+      if (!signal.aborted) {
+        failures++;
+        if (failure?.code === 'resource-exhausted') {
+          quotaPauseUntil = Date.now() + 30 * 60_000;
+          clearTimeout(quotaTimer);
+          quotaTimer = setTimeout(() => { if (!running) setStatus('error'); }, 30 * 60_000);
+        } else if (failures >= 3) retryPauseUntil = Date.now() + 15 * 60_000;
+      }
     } finally {
+      automaticRun = undefined;
       running = false;
       if (!stopped) {
-        setError(failure ?? null);
-        setStatus(Date.now() < quotaPauseUntil ? 'quota' : failure ? 'error' : done
-          ? manual && outcome === 'current' ? 'current' : 'idle' : 'pending');
-        if (done) { manual = false; deferCleanup(); }
-        if (requested || !done) schedule(requested ? 500 : Math.min(15_000 * 2 ** Math.min(failures, 3), 120_000));
+        setError(signal.aborted ? null : failure ?? null);
+        setStatus(signal.aborted ? 'idle' : Date.now() < quotaPauseUntil ? 'quota' : failure ? 'error' : done
+          ? fromButton && outcome === 'current' ? 'current' : 'idle' : 'pending');
+        if (fromButton && (done || failure)) manual = false;
+        if (done) deferCleanup();
+        if (requested || (!signal.aborted && !done)) {
+          schedule(requested ? 500 : Math.min(15_000 * 2 ** Math.min(failures, 3), 120_000));
+        }
       }
     }
   }
 
   let monitorFailed = false;
-  const watches = (watch === 'requests' ? [] : (['sessions', 'members', 'games'] as const)).map(path => {
-    let inputs: string | undefined;
-    return onSnapshot(collection(db, path), { includeMetadataChanges: true }, snapshot => {
-      if (snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) return;
-      const next = JSON.stringify(snapshot.docs.map(item => sourceProjection[path](item)));
-      if (next !== inputs) schedule(2_000);
-      inputs = next;
-    }, error => {
-      monitorFailed = true;
-      if (stopped) return;
-      setError(syncError('원본 변경 감시', error));
-      if (Date.now() >= quotaPauseUntil) setStatus('error');
-      schedule();
+  function monitorSources() {
+    return (['sessions', 'members', 'games'] as const).map(path => {
+      let inputs: string | undefined;
+      return onSnapshot(collection(db, path), { includeMetadataChanges: true }, snapshot => {
+        if (!automatic || snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) return;
+        const next = JSON.stringify(snapshot.docs.map(item => sourceProjection[path](item)));
+        if (next !== inputs) schedule(2_000);
+        inputs = next;
+      }, error => {
+        monitorFailed = true;
+        if (stopped || !automatic) return;
+        setError(syncError('원본 변경 감시', error));
+        if (Date.now() >= quotaPauseUntil) setStatus('error');
+        schedule();
+      });
     });
-  });
-  if (watch === 'requests') {
-    watches.push(onSnapshot(exhibitionRevisionRef(), { includeMetadataChanges: true }, snapshot => {
-      if (!snapshot.metadata.fromCache && !snapshot.metadata.hasPendingWrites) schedule();
+  }
+  function monitorRequests() {
+    return onSnapshot(exhibitionRevisionRef(), { includeMetadataChanges: true }, snapshot => {
+      if (automatic && !snapshot.metadata.fromCache && !snapshot.metadata.hasPendingWrites) schedule();
     }, error => {
       monitorFailed = true;
-      if (stopped) return;
+      if (stopped || !automatic) return;
       setError(syncError('동기화 요청 감시', error));
       if (Date.now() >= quotaPauseUntil) setStatus('error');
       schedule();
-    }));
+    });
   }
+  function setAutomatic(enabled: boolean) {
+    if (stopped || automatic === enabled) return;
+    automatic = enabled;
+    if (enabled) {
+      monitorFailed = false;
+      watches = watch === 'sources' ? monitorSources() : [monitorRequests()];
+      schedule(watch === 'sources' ? 2_000 : 500);
+    } else {
+      watches.forEach(unsubscribe => unsubscribe());
+      watches = [];
+      automaticRun?.abort();
+      if (!manual) clearTimeout(retry);
+    }
+  }
+  const stopSettings = onSnapshot(doc(db, 'exhibitionSettings', exhibitionId), { includeMetadataChanges: true }, snapshot => {
+    if (snapshot.metadata.hasPendingWrites) return;
+    const settings = snapshot.data();
+    setAutomatic(!snapshot.metadata.fromCache && settings?.autoPublish === true && settings.enabled === true);
+  }, () => setAutomatic(false));
   // A listener can terminate on temporary permission changes. Keep reconciliation
   // available until the administrator reopens the page and attaches new listeners.
-  const recovery = setInterval(() => { if (monitorFailed) schedule(); }, 120_000);
-  const onReconnect = () => schedule();
-  const onFocus = () => { if (Date.now() - lastScanAt >= 120_000) schedule(); };
+  const recovery = setInterval(() => { if (automatic && monitorFailed) schedule(); }, 120_000);
+  const onReconnect = () => { if (automatic) schedule(); };
+  const onFocus = () => { if (automatic && Date.now() - lastScanAt >= 120_000) schedule(); };
   window.addEventListener('online', onReconnect);
   window.addEventListener('focus', onFocus);
-  schedule(watch === 'sources' ? 2_000 : 500);
   function stop() {
     stopped = true;
     controller.abort();
     clearTimeout(retry);
     clearTimeout(cleanupTimer);
+    clearTimeout(quotaTimer);
     clearInterval(recovery);
+    stopSettings();
     watches.forEach(unsubscribe => unsubscribe());
     window.removeEventListener('online', onReconnect);
     window.removeEventListener('focus', onFocus);
   }
-  return { stop, request: (fromButton = true) => { manual ||= fromButton; schedule(0); } };
+  return { stop, request: () => { manual = true; schedule(0); } };
 }

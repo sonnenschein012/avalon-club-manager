@@ -433,7 +433,11 @@ describe('Firestore Security Rules', () => {
     await testEnv.withSecurityRulesDisabled(async context => {
       await setDoc(doc(context.firestore(), 'members/a'), { name: '자동 반영 부원' });
     });
+    const studioSettings = doc(operator, 'exhibitionSettings/avalon');
+    await saveExhibitionSettings('avalon', { enabled: true, autoPublish: true, period: { kind: 'all' }, gameMapping: [] });
     await saveExhibitionSettings('avalon', { enabled: true, period: { kind: 'all' }, gameMapping: [] });
+    expect((await getDoc(studioSettings)).data()?.autoPublish).toBe(true);
+    await assertFails(updateDoc(studioSettings, { autoPublish: 'true' }));
     await refreshExhibitions();
     const access = doc(operator, 'exhibitionAccess/avalon');
     const initial = (await getDoc(access)).data();
@@ -477,6 +481,7 @@ describe('Firestore Security Rules', () => {
     } finally { stop(); }
 
     const beforeRetry = (await getDoc(access)).data();
+    await saveExhibitionSettings('avalon', { enabled: true, autoPublish: false, period: { kind: 'all' }, gameMapping: [] });
     await deleteSessionRecord('live');
     const studioStatus = vi.fn();
     const { stop: stopAdmin, request } = watchExhibitionSync(studioStatus, errors, 'requests');

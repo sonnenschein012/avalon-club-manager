@@ -64,7 +64,7 @@ function change(selector: string, value: string) {
 }
 
 describe('exhibition admin settings', () => {
-  it('checks the existing role and saves settings for automatic reflection', async () => {
+  it('checks the existing role and saves settings with manual publishing by default', async () => {
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
       unobserve() {}
@@ -88,6 +88,12 @@ describe('exhibition admin settings', () => {
       await act(async () => { form.querySelector<HTMLButtonElement>(`button[role="radio"][value="${value}"]`)!.click(); });
     };
     expect(editActions()).toEqual([]);
+    const automatic = form.querySelector<HTMLInputElement>('#auto-publish')!;
+    expect(automatic.checked).toBe(false);
+    await act(async () => automatic.click());
+    expect(editActions()).toEqual(['Save changes', 'Cancel']);
+    await act(async () => clickButton('Cancel'));
+    expect(automatic.checked).toBe(false);
     await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
     expect(mocks.save).not.toHaveBeenCalled();
     await chooseVisibility('public');
@@ -196,11 +202,18 @@ describe('exhibition admin settings', () => {
     });
     expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Exhibit text');
     expect(window.location.hash).toBe('#copy');
-    expect(document.body.textContent).toContain('Changes saved. Updating records');
+    expect(document.body.textContent).toContain('Changes saved. Publish records');
     expect(editActions()).toEqual([]);
-    expect(mocks.request).toHaveBeenCalledOnce();
+    expect(mocks.request).not.toHaveBeenCalled();
     await act(async () => { clickButton('Publish records'); });
-    expect(mocks.request).toHaveBeenCalledTimes(2);
+    expect(mocks.request).toHaveBeenCalledOnce();
+    await act(async () => { press('[role="tab"][id$="-trigger-publication"]', 'Enter'); });
+    await act(async () => form.querySelector<HTMLInputElement>('#auto-publish')!.click());
+    await act(async () => clickButton('Save changes'));
+    expect(mocks.save).toHaveBeenLastCalledWith('avalon', expect.objectContaining({ autoPublish: true }));
+    await act(async () => form.querySelector<HTMLInputElement>('#auto-publish')!.click());
+    await act(async () => clickButton('Save changes'));
+    expect(mocks.save).toHaveBeenLastCalledWith('avalon', expect.objectContaining({ autoPublish: false }));
     await act(async () => { press('[role="tab"][id$="-trigger-pins"]', 'Enter'); });
     const upload = {
       version: 'upload:00000000-0000-4000-8000-000000000001',
