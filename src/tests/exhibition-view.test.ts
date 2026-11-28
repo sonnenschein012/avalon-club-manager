@@ -6,11 +6,12 @@ const companionId = 'b'.repeat(64);
 const otherId = 'c'.repeat(64);
 const api = vi.hoisted(() => ({
   find: vi.fn(), load: vi.fn(), generation: '1',
+  contentRevision: undefined as number | undefined,
   prime: vi.fn(),
   viewBudget: vi.fn(),
   loadImage: vi.fn(),
   appearance: undefined as ((notice: { descriptions: Record<string, string>; images: Record<string, string> }) => void) | undefined,
-  publication: undefined as ((notice: { id: string; descriptions: Record<string, string> }) => void) | undefined,
+  publication: undefined as ((notice: { id: string; contentRevision?: number; descriptions: Record<string, string> }) => void) | undefined,
   copy: undefined as ((notice: Record<string, string>) => void) | undefined,
 }));
 vi.mock('../../exhibition/data', () => ({
@@ -19,7 +20,7 @@ vi.mock('../../exhibition/data', () => ({
   findExhibitionMembers: api.find,
   loadExhibitionView: async (id: string, _publication: unknown, budget: number | undefined) => {
     api.viewBudget(budget);
-    return { record: await api.load(id), generationId: api.generation, descriptions: { avalon: '전시 설명' } };
+    return { record: await api.load(id), generationId: api.generation, contentRevision: api.contentRevision, descriptions: { avalon: '전시 설명' } };
   },
   loadExhibitionPinImage: api.loadImage,
   watchExhibitionPublication: (callback: typeof api.publication) => { api.publication = callback; return () => {}; },
@@ -55,6 +56,7 @@ describe('public exhibition view', () => {
     window.dispatchEvent(new Event('hashchange'));
     vi.resetAllMocks();
     api.generation = '1';
+    api.contentRevision = undefined;
     api.copy?.({});
   });
 
@@ -186,6 +188,14 @@ describe('public exhibition view', () => {
     ] });
     api.publication?.({ id: '2', descriptions: {} });
     await vi.waitFor(() => expect(pins()).toEqual(['dixit']));
+    expect(document.querySelector('.archive-date[aria-current] time')?.getAttribute('datetime')).toBe('2026-09-02');
+    api.contentRevision = 3;
+    api.load.mockResolvedValue({ name: '합성 부원', days: [
+      { date: '2026-09-02', gameIds: ['skull'], companions: [] },
+      { date: '2026-09-01', gameIds: ['coffee'], companions: [] },
+    ] });
+    api.publication?.({ id: '2', contentRevision: 3, descriptions: {} });
+    await vi.waitFor(() => expect(pins()).toEqual(['skull']));
     expect(document.querySelector('.archive-date[aria-current] time')?.getAttribute('datetime')).toBe('2026-09-02');
   });
 });

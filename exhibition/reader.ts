@@ -15,6 +15,7 @@ export const exhibitionLookupBudget = 3_000;
 
 interface Publication {
   id: string;
+  contentRevision?: number;
   descriptions: Record<string, string>;
   images: Record<string, string>;
   gameTitles: Record<string, string>;
@@ -23,7 +24,7 @@ interface Publication {
 
 function publication(data: DocumentData | undefined): Publication | null {
   if (data?.enabled !== true || typeof data.generationId !== 'string' || !data.generationId) return null;
-  return { id: data.generationId, descriptions: data.descriptions ?? {}, images: data.images ?? {},
+  return { id: data.generationId, contentRevision: data.contentRevision, descriptions: data.descriptions ?? {}, images: data.images ?? {},
     gameTitles: data.gameTitles ?? {}, endsAt: data.endsAt?.toMillis() };
 }
 

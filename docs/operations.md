@@ -106,6 +106,8 @@ GitHub의 **Actions → Production Hosting → Run workflow**에서 `main`과 �
 
 게임 ID로 집계하는 전시 형식(`projection-v4`)을 배포할 때는 Firestore Rules와 인덱스, 공개 전시, 원본 운영 앱과 Studio 순서로 배포합니다. 공개 전시는 이전 형식도 읽으며, 새 원본 운영 앱이나 Studio가 처음 반영을 마치면 새 형식으로 전환합니다.
 
+부분 발행을 사용하는 `projection-v5`는 Firestore Rules → 공개 전시 → 원본 운영 앱과 Studio 순서로 배포합니다. 공개 전시는 기존 세대와 새 내용 버전을 모두 읽습니다. 최신 발행 앱이 `projection-v5`를 기록한 뒤에는 이전 발행 앱을 새로고침해야 합니다. 공개 기록의 일부만 바뀐 경우 세대 ID는 그대로이고 내용 버전이 증가합니다. 사용 한도 오류가 표시되면 두 앱에서 수동 반영을 반복하기 전에 운영 Firestore의 쓰기 단위와 할당량을 확인합니다. 이전 세대의 관리자 정리는 지연될 수 있으며 방문자는 현재 공개 세대만 읽을 수 있습니다.
+
 저장소 **Settings → Environments → Production**에 `GCP_WORKLOAD_IDENTITY_PROVIDER`와 `GCP_SERVICE_ACCOUNT`를 유지합니다. GCP 쪽에는 기존 GitHub 저장소·`main`·`Production`으로 한정한 공급자 조건과 서비스 계정 연결을 유지합니다. 검증 실행의 권한 검사에서 부족한 권한 이름을 확인할 수 있습니다. Hosting 대상과 규칙 대상은 필요한 권한을 따로 검사합니다.
 
 관리자 사이트에서 전시 ID `avalon`을 열어 처음에는 비공개로 기간과 핀 매핑을 저장합니다. 브라우저에서 관리자 로그인과 기존 운영 앱을 확인한 뒤 전시를 공개합니다. 공개 후 대표 기록의 이름 조회, 날짜, 동료별 게임과 핀 설명을 확인합니다.

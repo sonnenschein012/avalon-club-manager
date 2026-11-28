@@ -1,5 +1,16 @@
 Bundled font notices
-Latin Modern Roman and Noto CJK are embedded as subsets.
+The current public exhibition bundles Maru Buri, Fraunces and BBH Bogle.
+
+Maru Buri Regular and Bold (maru-buri.woff2, maru-buri-bold.woff2)
+© NAVER Corp. © NAVER Cultural Foundation Corp.
+Reserved Font Name: MaruBuri
+Licensed under the SIL Open Font License 1.1. The full license text is
+included below in the Fraunces font license section and also applies to
+Maru Buri. See NAVER's license and source information:
+https://help.naver.com/service/11029/contents/18088?lang=ko&osType=PC
+
+Licenses for fonts from earlier exhibition builds follow alongside the
+current Fraunces and BBH Bogle notices.
 
 This package was debianized by Florent Rougon <f.rougon@free.fr> on
 Tue, 27 Jan 2004 20:12:21 +0100.

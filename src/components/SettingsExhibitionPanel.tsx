@@ -11,12 +11,14 @@ export interface ExhibitionPanelProps {
 const stamp = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Seoul' });
 
 export default function SettingsExhibitionPanel({ phase, failure, request }: ExhibitionPanelProps) {
-  const { status, statusError, requestError, requesting, publish, now } = useExhibitionPublication(phase, request);
+  const { status, statusError, publish, now } = useExhibitionPublication(phase, request);
   const publication = status?.published
     ? status.startsAt && +status.startsAt > now ? '공개 예정' : status.endsAt && +status.endsAt <= now ? '공개 종료' : '공개 중'
     : '공개된 기록 없음';
-  const working = requesting || phase === 'syncing';
+  const working = phase === 'syncing';
   const label = working ? '공개 기록 반영 중' : phase === 'error' ? '공개 기록 반영 실패'
+    : phase === 'quota' ? 'Firestore 사용 한도로 반영 일시 중지'
+    : phase === 'current' ? '공개 기록이 이미 최신입니다.'
     : phase === 'pending' || status?.pending ? '공개 기록 반영 대기'
     : statusError ? '반영 상태를 확인하지 못했습니다' : !status ? '반영 상태 확인 중'
     : status.published ? '공개 기록 반영 완료' : '공개된 기록 없음';
@@ -29,9 +31,8 @@ export default function SettingsExhibitionPanel({ phase, failure, request }: Exh
         {status?.lastSyncedAt && <p>마지막 반영 {stamp.format(status.lastSyncedAt)} · 컬렉션 {status.profileCount ?? 0}개</p>}
         {failure && phase === 'error' && <p>{failure.step} ({failure.code})</p>}
       </div>
-      {requestError && <p className="mt-2 text-sm text-red-700" role="alert">반영을 요청하지 못했습니다. 다시 시도해 주세요.</p>}
       <div className="mt-4 flex flex-wrap gap-2">
-        <button type="button" disabled={working} onClick={() => void publish()}
+        <button type="button" disabled={working || phase === 'quota'} onClick={publish}
           className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-navy px-4 py-2 text-sm font-bold text-white transition-colors hover:bg-gold disabled:opacity-50">
           <RefreshCw size={16} className={working ? 'motion-safe:animate-spin' : undefined} aria-hidden="true" /> 공개 기록 반영
         </button>

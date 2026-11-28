@@ -6,7 +6,6 @@ const mocks = vi.hoisted(() => ({
   authChanged: undefined as ((user: { uid: string; email: string }) => void) | undefined,
   admin: vi.fn(),
   save: vi.fn(),
-  retry: vi.fn(),
   request: vi.fn(),
   prepareImage: vi.fn(),
 }));
@@ -37,7 +36,6 @@ vi.mock('../services/exhibitionSyncService', () => ({
   loadExhibitionSettings: async () => ({ enabled: false, period: { kind: 'all' }, gameMapping: [] }),
   loadExhibitionStatus: async () => ({ pending: false, generationId: '42', unmappedGameIds: ['source-game'], missingMemberIds: [] }),
   loadPublishedExhibitionGameKeys: async () => [fallbackExhibitionPin('missing-pin'), fallbackExhibitionPin('source-game')],
-  retryExhibitionRefresh: mocks.retry,
   saveExhibitionSettings: mocks.save,
   watchExhibitionSync: () => ({ stop: () => {}, request: mocks.request }),
 }));
@@ -76,7 +74,6 @@ describe('exhibition admin settings', () => {
     document.body.innerHTML = '<div id="root"></div>';
     mocks.admin.mockResolvedValueOnce({ isAdmin: false }).mockResolvedValueOnce({ isAdmin: true });
     mocks.save.mockResolvedValue(true);
-    mocks.retry.mockResolvedValue(undefined);
     await act(async () => { await import('../../exhibition-admin/main'); });
 
     await act(async () => { mocks.authChanged?.({ uid: 'visitor', email: 'visitor@example.invalid' }); });
@@ -203,7 +200,6 @@ describe('exhibition admin settings', () => {
     expect(editActions()).toEqual([]);
     expect(mocks.request).toHaveBeenCalledOnce();
     await act(async () => { clickButton('Publish records'); });
-    expect(mocks.retry).toHaveBeenCalledOnce();
     expect(mocks.request).toHaveBeenCalledTimes(2);
     await act(async () => { press('[role="tab"][id$="-trigger-pins"]', 'Enter'); });
     const upload = {

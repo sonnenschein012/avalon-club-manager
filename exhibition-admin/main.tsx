@@ -5,7 +5,7 @@ import { collection, getDocsFromServer } from 'firebase/firestore';
 import { ArrowUpRight, ClipboardList, Globe2, ImageIcon, LogOut, RefreshCw, Search, Type } from 'lucide-react';
 import { auth, checkAdminStatus, db, logout, signInWithGoogle } from '../src/lib/firebase';
 import {
-  loadExhibitionSettings, loadExhibitionStatus, loadPublishedExhibitionGameKeys, retryExhibitionRefresh, saveExhibitionSettings,
+  loadExhibitionSettings, loadExhibitionStatus, loadPublishedExhibitionGameKeys, saveExhibitionSettings,
   watchExhibitionSync, type ExhibitionSettings, type ExhibitionSyncStatus, type ExhibitionSyncError,
 } from '../src/services/exhibitionSyncService';
 import {
@@ -295,7 +295,6 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
     (activeGeneration ? (olderGeneration?.id === activeGeneration ? olderGeneration.keys : undefined)
       : status ? [] : undefined);
   const [message, setMessage] = useState<{ text: StudioMessage; error?: boolean }>();
-  const [publicationMessage, setPublicationMessage] = useState<{ text: StudioMessage; error?: boolean }>();
   const [busy, setBusy] = useState(false);
   const canEdit = section !== 'worklist' && (section !== 'pins' || Boolean(selectedGame));
   const hasChanges = visibility !== savedForm.visibility || periodKind !== savedForm.periodKind ||
@@ -310,7 +309,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
     !sameOverrides(descriptions, savedPins.descriptions) || !sameOverrides(images, savedPins.images);
 
   const [syncFailure, setSyncFailure] = useState<ExhibitionSyncError | null>(null);
-  const requestSync = useRef<() => void>(() => {});
+  const requestSync = useRef<(fromButton?: boolean) => void>(() => {});
   useEffect(() => {
     const watcher = watchExhibitionSync(setSync, setSyncFailure, 'requests');
     requestSync.current = watcher.request;
@@ -383,7 +382,7 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
       setMessage({ text: 'Changes saved.' });
       if (needsSync) {
         setMessage({ text: 'Changes saved. Updating records…' });
-        requestSync.current();
+        requestSync.current(false);
       }
     } catch {
       setMessage({ text: 'Could not save changes. Try again.', error: true });
@@ -425,20 +424,6 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
     setMessage({ text: 'Returned to saved settings.' });
   }
 
-  async function synchronize() {
-    setBusy(true);
-    setPublicationMessage(undefined);
-    try {
-      await retryExhibitionRefresh();
-      requestSync.current();
-      setPublicationMessage({ text: 'Publishing records using saved settings.' });
-    } catch {
-      setPublicationMessage({ text: 'Could not start sync. Try again.', error: true });
-    } finally {
-      setBusy(false);
-    }
-  }
-
   const lastSync = status?.lastSyncedAt?.toLocaleString(language === 'ko' ? 'ko-KR' : 'en-US',
     { timeZone: 'Asia/Seoul', dateStyle: 'medium', timeStyle: 'short' });
   const count = status?.profileCount ?? 0;
@@ -451,6 +436,8 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
   const lastSyncLabel = language === 'ko' ? `${t('Last published:')} ${lastSync} · 컬렉션 ${count}개`
     : `Last published: ${lastSync} KST · ${count} collections`;
   const syncLabel = sync === 'syncing' ? t('Publishing records…')
+    : sync === 'quota' ? t('Publication paused · Firestore usage limit')
+    : sync === 'current' ? t('Published records are up to date.')
     : sync === 'error' && status?.pending !== false ? t('Publication failed · retrying')
       : status?.pending || (sync === 'pending' && !status) ? t('Publication pending')
         : lastSync ? lastSyncLabel : t('No records published yet');
@@ -470,11 +457,8 @@ function Settings({ initial, games }: { initial: ExhibitionSettings; games: Game
         <div className="grid gap-1.5">
           <div className="flex items-center gap-2 text-sm font-semibold">{t('Exhibit status')} <Badge variant="secondary">{t(publicationLabel)}</Badge></div>
           <p className="text-sm text-muted-foreground" role="status">{syncLabel}</p>
-          {publicationMessage && <p className="text-sm text-muted-foreground" role={publicationMessage.error ? 'alert' : 'status'}>
-            {t(publicationMessage.text)}
-          </p>}
         </div>
-        <Button type="button" variant="outline" disabled={busy || sync === 'syncing'} onClick={() => void synchronize()}>
+        <Button type="button" variant="outline" disabled={busy || sync === 'syncing' || sync === 'quota'} onClick={() => requestSync.current()}>
           <RefreshCw className={sync === 'syncing' ? 'motion-safe:animate-spin' : undefined} /> {t('Publish records')}
         </Button>
       </CardContent>

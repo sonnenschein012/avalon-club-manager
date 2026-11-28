@@ -17,7 +17,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 
-import { loadExhibitionSettings, loadExhibitionStatus, loadPublishedExhibitionGameKeys, refreshExhibitions, retryExhibitionRefresh, saveExhibitionSettings, watchExhibitionSync } from '../services/exhibitionSyncService';
+import { loadExhibitionSettings, loadExhibitionStatus, loadPublishedExhibitionGameKeys, refreshExhibitions, saveExhibitionSettings, watchExhibitionSync } from '../services/exhibitionSyncService';
 import { importSessionRecords, updateSessionGroupGames, deleteSessionRecord } from '../services/sessionsService';
 import { requestExhibitionRefresh } from '../services/exhibitionRevision';
 import { exhibitionNameKey } from '../domain/exhibition/collection';
@@ -250,7 +250,8 @@ describe('Firestore Security Rules', () => {
     const access = 'exhibitionAccess/season';
     await assertFails(getDoc(doc(visitor, access)));
     expect(await refreshExhibitions()).toBe(true);
-    const initial = (await getDoc(doc(visitor, access))).data()?.generationId;
+    const before = (await getDoc(doc(visitor, access))).data();
+    const initial = before?.generationId;
     const nameKey = await exhibitionNameKey('합성 부원');
     expect((await getDoc(doc(visitor, `${access}/generations/${initial}/names/${nameKey}`))).exists()).toBe(true);
 
@@ -273,10 +274,10 @@ describe('Firestore Security Rules', () => {
       releaseBuild();
     }
     expect(await obsolete).toBe(false);
-    const latest = (await getDoc(doc(visitor, access))).data()?.generationId;
-    expect(latest).not.toBe(initial);
-    await assertFails(getDoc(doc(visitor, `${access}/generations/${initial}/names/${nameKey}`)));
-    expect((await getDoc(doc(operator, `${access}/generations/${initial}`))).exists()).toBe(false);
+    const after = (await getDoc(doc(visitor, access))).data();
+    const latest = after?.generationId;
+    expect(latest).toBe(initial);
+    expect(after?.contentRevision).toBeGreaterThan(before?.contentRevision);
     expect((await getDocs(collection(operator, `${access}/generations/${initial}/profiles`))).empty).toBe(true);
     await assertFails(deleteDoc(doc(operator, `${access}/generations/${latest}`)));
     expect((await getDoc(doc(operator, `${access}/generations/${latest}`))).exists()).toBe(true);
@@ -361,15 +362,20 @@ describe('Firestore Security Rules', () => {
     } finally { stopCopy(); }
     await assertFails(updateDoc(doc(visitor, 'exhibitionCopy/avalon'), { copy: { entryTitle: 'unauthorized' } }));
     await assertFails(getDocs(collection(visitor, 'exhibitionCopy')));
-    await retryExhibitionRefresh();
-    expect((await loadExhibitionStatus('avalon')).pending).toBe(true);
+    const beforeNoOp = await loadExhibitionStatus('avalon');
+    const unchanged = vi.fn();
+    await expect(refreshExhibitions(undefined, undefined, unchanged)).resolves.toBe(true);
+    expect(unchanged).toHaveBeenCalledWith('current');
+    expect(await loadExhibitionStatus('avalon')).toEqual(beforeNoOp);
     let profile = await publicReader.loadExhibitionProfile(id);
     expect(profile?.days.map(day => day.gameIds)).toEqual([[fallbackExhibitionPin('avalon')], [fallbackExhibitionPin('dixit')]]);
     expect(profile?.days[0]?.companions[0]).toMatchObject({ name: '합성 나래', gameIds: [fallbackExhibitionPin('avalon')] });
     expect(profile).not.toHaveProperty('phone');
 
     await updateSessionGroupGames('meeting', 'new-group', ['coffee', 'other']);
-    await refreshExhibitions();
+    const changed = vi.fn();
+    await Promise.all([refreshExhibitions(undefined, undefined, changed), refreshExhibitions(undefined, undefined, changed)]);
+    expect(changed.mock.calls.filter(([result]) => result === 'published')).toHaveLength(1);
     profile = await publicReader.loadExhibitionProfile(id);
     const otherId = fallbackExhibitionPin('other');
     expect(profile?.gameTitles?.[otherId]).toBe('핀 없는 게임');
@@ -430,7 +436,7 @@ describe('Firestore Security Rules', () => {
     await saveExhibitionSettings('avalon', { enabled: true, period: { kind: 'all' }, gameMapping: [] });
     await refreshExhibitions();
     const access = doc(operator, 'exhibitionAccess/avalon');
-    const initial = (await getDoc(access)).data()?.generationId;
+    const initial = (await getDoc(access)).data();
     const marker = doc(operator, 'exhibitionSync/source');
     const errors = vi.fn();
     const { stop } = watchExhibitionSync(() => {}, errors, 'sources');
@@ -438,14 +444,19 @@ describe('Firestore Security Rules', () => {
       await importSessionRecords([{ id: 'live', date: '2026-09-02', name: '실시간',
         groups: [{ id: 'group', memberIds: ['a'], gameIds: [] }] }]);
       await vi.waitFor(async () => {
-        const updated = (await getDoc(access)).data()?.generationId;
-        expect(updated).not.toBe(initial);
+        const updated = (await getDoc(access)).data();
+        expect(updated?.generationId).toBe(initial?.generationId);
+        expect(updated?.contentRevision).toBeGreaterThan(initial?.contentRevision);
         const key = await exhibitionNameKey('자동 반영 부원');
-        const path = `exhibitionAccess/avalon/generations/${updated}/names/${key}`;
+        const path = `exhibitionAccess/avalon/generations/${updated?.generationId}/names/${key}`;
         expect((await getDoc(doc(operator, path))).exists()).toBe(true);
       }, { timeout: 10_000, interval: 300 });
       const currentMarker = (await getDoc(marker)).data();
-      expect(currentMarker?.fingerprint).toMatch(/^projection-v4:[a-f0-9]{64}$/);
+      expect(currentMarker?.fingerprint).toMatch(/^projection-v5:[a-f0-9]{64}$/);
+      await assertFails(setDoc(marker, {
+        revision: Number(currentMarker?.revision) + 1,
+        fingerprint: 'projection-v4:' + 'e'.repeat(64),
+      }));
       await assertFails(setDoc(marker, {
         revision: Number(currentMarker?.revision) + 1,
         fingerprint: 'projection-v3:' + 'e'.repeat(64),
@@ -465,17 +476,56 @@ describe('Firestore Security Rules', () => {
       expect(errors).not.toHaveBeenCalledWith(expect.objectContaining({ code: expect.any(String) }));
     } finally { stop(); }
 
-    const beforeRetry = (await getDoc(access)).data()?.generationId;
+    const beforeRetry = (await getDoc(access)).data();
     await deleteSessionRecord('live');
-    const { stop: stopAdmin } = watchExhibitionSync(() => {}, errors, 'requests');
+    const studioStatus = vi.fn();
+    const { stop: stopAdmin, request } = watchExhibitionSync(studioStatus, errors, 'requests');
     try {
-      await retryExhibitionRefresh();
+      request();
       await vi.waitFor(async () => {
-        expect((await getDoc(access)).data()?.generationId).not.toBe(beforeRetry);
+        const current = (await getDoc(access)).data();
+        expect(current?.generationId).toBe(beforeRetry?.generationId);
+        expect(current?.contentRevision).toBeGreaterThan(beforeRetry?.contentRevision);
         expect((await loadExhibitionStatus('avalon')).unmappedGameIds).toEqual([]);
         expect((await loadExhibitionStatus('avalon')).pending).toBe(false);
       }, { timeout: 10_000, interval: 300 });
+      const latest = (await getDoc(marker)).data();
+      request();
+      await vi.waitFor(() => expect(studioStatus).toHaveBeenLastCalledWith('current'));
+      expect((await getDoc(marker)).data()).toEqual(latest);
     } finally { stopAdmin(); }
+  }, 20_000);
+
+  it('stages a large publication before switching access and leaves prior records private for deferred cleanup', async () => {
+    if (!testEnv) throw new Error('testEnv not initialized');
+    await seedRegularAdmin();
+    const operator = testEnv.authenticatedContext('bulk-exhibit-admin', { email: REGULAR_ADMIN_EMAIL }).firestore();
+    const visitor = testEnv.unauthenticatedContext().firestore();
+    sync.db = operator;
+    const memberIds = Array.from({ length: 42 }, (_, index) => `bulk-${index}`);
+    await testEnv.withSecurityRulesDisabled(async context => {
+      const database = context.firestore();
+      const batch = writeBatch(database);
+      memberIds.forEach((id, index) => batch.set(doc(database, 'members', id), { name: `합성 부원 ${index}` }));
+      await batch.commit();
+    });
+    await saveExhibitionSettings('avalon', { enabled: true, period: { kind: 'all' }, gameMapping: [] });
+    await refreshExhibitions();
+    const before = (await loadExhibitionStatus('avalon')).generationId;
+    await importSessionRecords([{ id: 'weekly', date: '2026-09-02', name: '정기모임', groups:
+      Array.from({ length: 7 }, (_, index) => ({ id: `group-${index}`, memberIds: memberIds.slice(index * 6, index * 6 + 6), gameIds: [] })) }]);
+    const outcome = vi.fn();
+    await Promise.all([refreshExhibitions(undefined, undefined, outcome), refreshExhibitions(undefined, undefined, outcome)]);
+    expect(outcome.mock.calls.filter(([result]) => result === 'published')).toHaveLength(1);
+    const after = await loadExhibitionStatus('avalon');
+    expect(after.generationId).not.toBe(before);
+    expect(after.profileCount).toBe(42);
+    const key = await exhibitionNameKey('합성 부원 0');
+    const root = 'exhibitionAccess/avalon/generations';
+    await assertFails(getDoc(doc(visitor, `${root}/${before}/names/${key}`)));
+    expect((await getDoc(doc(visitor, `${root}/${after.generationId}/names/${key}`))).exists()).toBe(true);
+    expect((await getDoc(doc(operator, `${root}/${before}`))).exists()).toBe(true);
+    await assertFails(getDoc(doc(visitor, 'exhibitionSync/staging')));
   }, 20_000);
 
   it('keeps a 400-record import atomic without writing to the exhibition', async () => {

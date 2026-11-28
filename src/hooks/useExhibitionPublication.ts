@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
-import { loadExhibitionStatus, retryExhibitionRefresh, type ExhibitionSyncStatus } from '../services/exhibitionSyncService';
+import { loadExhibitionStatus, type ExhibitionSyncStatus } from '../services/exhibitionSyncService';
 
 const exhibitionId = import.meta.env.VITE_EXHIBITION_ID || 'avalon';
 
 export function useExhibitionPublication(phase: ExhibitionSyncStatus, request: () => void) {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof loadExhibitionStatus>>>();
   const [statusError, setStatusError] = useState(false);
-  const [requestError, setRequestError] = useState(false);
-  const [requesting, setRequesting] = useState(false);
   const [now, setNow] = useState(Date.now);
 
   useEffect(() => {
@@ -18,7 +16,7 @@ export function useExhibitionPublication(phase: ExhibitionSyncStatus, request: (
       if (active) setStatusError(true);
     });
     return () => { active = false; };
-  }, [phase, requesting]);
+  }, [phase]);
 
   useEffect(() => {
     const changedAt = [status?.startsAt, status?.endsAt].find(value => value && +value > now);
@@ -27,18 +25,5 @@ export function useExhibitionPublication(phase: ExhibitionSyncStatus, request: (
     return () => clearTimeout(timer);
   }, [now, status]);
 
-  async function publish() {
-    setRequesting(true);
-    setRequestError(false);
-    try {
-      await retryExhibitionRefresh();
-      request();
-    } catch {
-      setRequestError(true);
-    } finally {
-      setRequesting(false);
-    }
-  }
-
-  return { status, statusError, requestError, requesting, publish, now };
+  return { status, statusError, publish: request, now };
 }

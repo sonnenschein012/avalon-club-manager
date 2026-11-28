@@ -4,6 +4,16 @@ Avalon 보드게임 동아리의 회원, 게임, 정기 모임, 면접을 관리
 
 현재 소스는 이 저장소의 `main` 브랜치에서 관리합니다. 개발을 시작할 때는 아래 실행 환경 안내와 [개발 가이드](docs/development.md)에서 시작하세요.
 
+## 운영 사이트
+
+| 사이트 | 역할 | 로컬 실행 | 운영 빌드 |
+| --- | --- | --- | --- |
+| [원본 운영 앱](https://avalondgu.web.app/) | 관리자용 회원·게임·모임·세션·면접 관리 | `npm.cmd run dev` | `npm.cmd run build` |
+| [공개 전시](https://avalon-collection.web.app/) | 부원이 이름으로 공개된 개인 컬렉션을 조회하는 사이트 | `npm.cmd run exhibition:dev` | `npm.cmd run exhibition:build` |
+| [전시 설정 · AVALON Studio](https://avalon-collection-studio.web.app/) | 관리자용 공개 범위·핀·문구 설정과 공개 기록 반영 | `npm.cmd run exhibition:admin:dev` | `npm.cmd run exhibition:admin:build` |
+
+세 사이트는 운영 Firestore를 공유합니다. 공개 전시와 Studio를 로컬에서 확인할 때는 `npm.cmd run design-lab`으로 Auth·Firestore Emulator를 먼저 실행하세요. 운영 배포는 [운영 가이드](docs/operations.md#github-actions-운영-배포)를 따릅니다.
+
 ## 주요 기능
 
 - 회원과 보유 게임 관리
@@ -35,9 +45,9 @@ npm.cmd ci
 npm.cmd run dev
 ```
 
-개발 서버는 기본적으로 `http://localhost:3000`에서 실행됩니다.
+원본 운영 앱의 개발 서버는 기본적으로 `http://localhost:3000`에서 실행됩니다.
 
-`dev`는 Emulator Design Lab을 실행하며 로컬 합성 데이터를 초기화합니다. Java 21이 필요하며 Windows 최초 실행 전 `npm.cmd run demo:setup`을 실행하세요. UI만 확인할 때는 Scenario Lab을 사용하세요. 운영 연결은 명시적인 `npm.cmd run dev:prod` 명령에서만 사용합니다. macOS/Linux에서는 `npm.cmd` 대신 `npm`을 사용합니다.
+`dev`는 Emulator Design Lab을 실행하며 로컬 합성 데이터를 초기화합니다. Java 21이 필요하며 Windows 최초 실행 전 `npm.cmd run demo:setup`을 실행하세요. UI만 확인할 때는 Scenario Lab을 사용하세요. 개발 서버를 운영 Firebase에 연결하려면 `npm.cmd run dev:prod`를 명시적으로 실행합니다. macOS/Linux에서는 `npm.cmd` 대신 `npm`을 사용합니다.
 
 ## 개발 안내
 
@@ -100,7 +110,7 @@ npm.cmd run test:rules
 
 staging은 운영과 분리된 `avalon-manager-staging` 프로젝트를 사용합니다. `npm.cmd run deploy:staging`은 이 프로젝트의 기본 데이터베이스에 Rules/인덱스를, 같은 이름의 Hosting site에 정적 앱을 순서대로 배포합니다. 정확한 대상과 운영 배포 명령은 [운영·인수인계](docs/operations.md)에 정리되어 있습니다.
 
-일반 및 staging 빌드는 `index.html`만 진입점으로 사용합니다. 빌드 후 검증 스크립트가 `design.html`, Scenario fixture, 가짜 사용자 식별자가 `dist`에 들어오면 배포 전에 실패시킵니다.
+원본 운영 앱의 일반 및 staging 빌드는 `index.html`을 사용합니다. 빌드 후 검증 스크립트가 `design.html`, Scenario fixture, 가짜 사용자 식별자가 `dist`에 들어오면 배포 전에 실패시킵니다. 공개 전시와 Studio의 빌드 결과는 각 앱 디렉터리의 `dist/`에 생성됩니다.
 
 ## 새 컴퓨터·새 작업 세션
 

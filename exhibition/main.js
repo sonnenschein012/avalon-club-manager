@@ -339,7 +339,7 @@ function watchPublishedRecord() {
     if (!profile || readRoute()?.id !== profile.id) return;
     if (!update) return showUnavailable();
     trackPublicationEnd(update.endsAt);
-    if (update.id !== profile?.generationId) {
+    if (update.id !== profile?.generationId || update.contentRevision !== profile?.contentRevision) {
       void refresh(update);
     } else updatePinDescriptions(pinAppearance?.descriptions ?? update.descriptions);
   });
@@ -393,7 +393,7 @@ async function refresh(published, lookup) {
   try {
     const remaining = lookup?.startedAt === undefined ? undefined :
       Math.max(1, exhibitionLookupBudget - (performance.now() - lookup.startedAt));
-    const { record: data, generationId, descriptions, images = {}, gameTitles = {}, endsAt } = await loadExhibitionView(route.id, published, remaining);
+    const { record: data, generationId, contentRevision, descriptions, images = {}, gameTitles = {}, endsAt } = await loadExhibitionView(route.id, published, remaining);
     const latestRoute = readRoute();
     if (request !== entryRequest || latestRoute?.id !== route.id) return;
     if (!data) {
@@ -401,12 +401,12 @@ async function refresh(published, lookup) {
       resetEntry(copy.missingRecord, undefined, lookup?.name);
       return;
     }
-    if (previous && previous.generationId === generationId) {
+    if (previous && previous.generationId === generationId && previous.contentRevision === contentRevision) {
       updatePinDescriptions(pinAppearance?.descriptions ?? descriptions);
       trackPublicationEnd(endsAt);
       return;
     }
-    profile = { id: route.id, generationId, data, gameTitles, images: pinAppearance?.images ?? images,
+    profile = { id: route.id, generationId, contentRevision, data, gameTitles, images: pinAppearance?.images ?? images,
       descriptions: pinAppearance?.descriptions ?? descriptions, gameOrder: rankedGames(data.days) };
     render(makeState(latestRoute), Boolean(previous));
     trackPublicationEnd(endsAt);

@@ -68,10 +68,10 @@ jobs:
           done
           echo "Target: $TARGET (deploy=${{ inputs.deploy }})" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
           cache: npm
